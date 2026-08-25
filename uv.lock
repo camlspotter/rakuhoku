@@ -986,7 +986,7 @@ dev = [
 requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.12.1,<1.17" },
+    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.16,<1.17" },
     { name = "sentence-transformers", specifier = ">=5.1.1" },
     { name = "sudachidict-core", specifier = "==20260116" },
     { name = "sudachipy", specifier = "==0.6.10" },

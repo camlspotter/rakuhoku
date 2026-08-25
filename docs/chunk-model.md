@@ -42,8 +42,7 @@ class RegulationChunk(ChunkModel):
 ### `dense_fields()`
 
 dense入力に使うフィールドを、`DenseField(name, text)`の順序付きシーケンスとして返す。
-フィールド名を含む実際のdenseテキストへのレンダリング規則は、Qdrant統合APIとともに
-別途定義する。
+Qdrant統合APIは、各要素を`name: text`形式で改行連結する。
 
 ### `sparse_fields()`
 
@@ -62,4 +61,4 @@ sparse入力に使う値を`SparseField(text, weight)`として返す。`SparseF
 Qdrantコレクションへ登録するchunkは同じIDを使用する。3つのメソッドのフィールド選択、
 順序、ラベル、fallback、重み、rerank対象を変更した場合はIDも変更する。
 
-IDの保存と既存コレクションを開く際の検証は、今後のQdrant統合APIで実装する。
+`HybridQdrantDB.create()`はIDをcollection metadataへ保存し、`open()`で一致を検証する。

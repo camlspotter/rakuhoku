@@ -1,10 +1,10 @@
 # rag-vectorizers
 
 `rag-vectorizers`は、再現可能な密ベクトルと日本語の疎ベクトルを生成するための
-小さなPythonパッケージである。Qdrantのコレクション、ペイロード、クエリ展開、
-score fusion、アプリケーション固有の入力テキスト構築は、このパッケージの責務に
-含めない。sparse検索後の候補文字列を比較するローカル字句rerankerは、独立した
-補助機能として提供する。
+小さなPythonパッケージである。dense・sparse vector生成に加え、単一Qdrant
+collectionへの登録と標準検索APIを提供する。標準検索はdense・sparse候補をpoint IDで
+統合し、保存済みchunk文字列から全文検索scoreを付ける。dense scoreと全文検索scoreの
+最終的な合成はアプリケーションが決める。
 
 > [!IMPORTANT]
 > 2026-08-18に`SudachiSparseEncoder`の仕様選択とローカル実装への反映を完了した。
@@ -59,8 +59,55 @@ from rag_vectorizers.qdrant import to_qdrant_sparse_vector
 qdrant_vector = to_qdrant_sparse_vector(vector)
 ```
 
-このベクトルを使用するQdrantコレクションでは`Modifier.IDF`を設定する。ベクトル名と
-コレクションの作成・更新・削除は、アプリケーション側の責務とする。
+低水準APIで既存コードへ組み込む場合、このベクトルを使用するQdrantコレクションでは
+`Modifier.IDF`を設定する。新規コードでは、次の統合APIがこの設定を管理する。
+
+## Qdrant標準検索API
+
+一つのDBを検索するときは、原則として`HybridQdrantDB.search()`を使用する。
+
+```python
+from qdrant_client import AsyncQdrantClient
+from rag_vectorizers import (
+    HybridDBConfig,
+    HybridQdrantDB,
+    QueryVectorizer,
+    SudachiLexicalReranker,
+)
+
+client = AsyncQdrantClient(url="http://localhost:6333")
+vectorizer = QueryVectorizer(
+    dense_encoder=dense_encoder,
+    sparse_encoder=sparse_encoder,
+)
+config = HybridDBConfig(
+    collection_name="documents",
+    dense_vector_name="dense",
+    sparse_vector_name="sparse",
+    dense_dimension=vectorizer.dense_dimension,
+    dense_model_id=vectorizer.dense_model_id,
+    sparse_algorithm_id=vectorizer.sparse_algorithm_id,
+    vectorization_schema_id=DocumentChunk.vectorization_schema_id,
+)
+
+db = await HybridQdrantDB.open(
+    client=client,
+    config=config,
+    chunk_type=DocumentChunk,
+    vectorizer=vectorizer,
+    reranker=SudachiLexicalReranker(),
+)
+results = await db.search("利用できない", dense_limit=50, sparse_limit=50)
+
+for result in results:
+    print(result.chunk, result.dense_score, result.fulltext_score)
+```
+
+sparse検索のQdrant scoreは候補取得にだけ使い、結果には残さない。dense由来、sparse由来の
+全候補に同じ全文検索rerankerを適用する。複数DBでquery vectorを再利用する場合は、
+`QueryVectorizer.encode()`で一度だけ`PreparedQuery`を作り、各DBの
+`search_by_vectors()`へ渡す。作成・登録を含む完全なAPIは
+[Qdrant統合API](docs/qdrant.md)を参照する。
 
 ## ローカルreranking
 
