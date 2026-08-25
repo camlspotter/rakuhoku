@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from rag_vectorizers import (
+from rakuhoku import (
     SUPPORTED_DICTIONARY_VERSION,
     SUPPORTED_SUDACHIPY_VERSION,
     SudachiSparseEncoder,

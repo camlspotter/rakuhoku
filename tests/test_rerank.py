@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from rag_vectorizers import SudachiLexicalReranker
-from rag_vectorizers.rerank import RerankConfig
-from rag_vectorizers.sudachi import Morpheme
+from rakuhoku import SudachiLexicalReranker
+from rakuhoku.rerank import RerankConfig
+from rakuhoku.sudachi import Morpheme
 
 from .fakes import FakeTokenizer
 

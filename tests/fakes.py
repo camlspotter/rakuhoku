@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from rag_vectorizers.sudachi import Morpheme
+from rakuhoku.sudachi import Morpheme
 
 
 class FakeTokenizer:

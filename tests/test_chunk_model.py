@@ -5,7 +5,7 @@ from typing import ClassVar
 
 import pytest
 
-from rag_vectorizers import ChunkModel, DenseField, SparseField
+from rakuhoku import ChunkModel, DenseField, SparseField
 
 
 class ExampleChunk(ChunkModel):

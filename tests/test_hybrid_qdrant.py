@@ -9,7 +9,7 @@ import pytest
 from numpy.typing import NDArray
 from qdrant_client import AsyncQdrantClient
 
-from rag_vectorizers import (
+from rakuhoku import (
     ChunkModel,
     ChunkPoint,
     DenseField,
@@ -140,7 +140,7 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
                 collection_name="chunks", ids=[2], with_payload=True
             )
             assert stored[0].payload is not None
-            assert stored[0].payload["_rag_vectorizers"] == {
+            assert stored[0].payload["_rakuhoku"] == {
                 "dense_text": "title: sparse-only\ntext: この設備は利用できない",
                 "sparse_fields": [
                     {"text": "sparse-only", "weight": 2.0},

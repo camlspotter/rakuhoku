@@ -1,6 +1,6 @@
-# rag-vectorizers
+# rakuhoku
 
-`rag-vectorizers`は、再現可能な密ベクトルと日本語の疎ベクトルを生成するための
+`rakuhoku`は、再現可能な密ベクトルと日本語の疎ベクトルを生成するための
 小さなPythonパッケージである。dense・sparse vector生成に加え、単一Qdrant
 collectionへの登録と標準検索APIを提供する。標準検索はdense・sparse候補をpoint IDで
 統合し、保存済みchunk文字列から全文検索scoreを付ける。dense scoreと全文検索scoreの
@@ -16,7 +16,7 @@ collectionへの登録と標準検索APIを提供する。標準検索はdense�
 ```python
 from pathlib import Path
 
-from rag_vectorizers import SentenceTransformerEncoder
+from rakuhoku import SentenceTransformerEncoder
 
 encoder = SentenceTransformerEncoder(
     model_name="cl-nagoya/ruri-v3-130m",
@@ -36,7 +36,7 @@ query_vectors = encoder.encode_queries(["検索語"])
 ## 疎ベクトル
 
 ```python
-from rag_vectorizers import SparseField, SudachiSparseEncoder
+from rakuhoku import SparseField, SudachiSparseEncoder
 
 encoder = SudachiSparseEncoder()
 vector = encoder.encode("生成AIの教育活用")
@@ -50,11 +50,11 @@ explanation = encoder.explain("研究所")
 オプションのアダプターをインストールする。
 
 ```console
-uv add 'rag-vectorizers[qdrant]'
+uv add 'rakuhoku[qdrant]'
 ```
 
 ```python
-from rag_vectorizers.qdrant import to_qdrant_sparse_vector
+from rakuhoku.qdrant import to_qdrant_sparse_vector
 
 qdrant_vector = to_qdrant_sparse_vector(vector)
 ```
@@ -68,7 +68,7 @@ qdrant_vector = to_qdrant_sparse_vector(vector)
 
 ```python
 from qdrant_client import AsyncQdrantClient
-from rag_vectorizers import (
+from rakuhoku import (
     HybridDBConfig,
     HybridQdrantDB,
     QueryVectorizer,
@@ -112,7 +112,7 @@ sparse検索のQdrant scoreは候補取得にだけ使い、結果には残さ�
 ## ローカルreranking
 
 ```python
-from rag_vectorizers import SudachiLexicalReranker
+from rakuhoku import SudachiLexicalReranker
 
 reranker = SudachiLexicalReranker()
 results = reranker.rerank(
@@ -141,7 +141,7 @@ reranking用テキストの作り方を分離する。ライブラリはpayload�
 from collections.abc import Sequence
 from typing import ClassVar
 
-from rag_vectorizers import ChunkModel, DenseField, SparseField
+from rakuhoku import ChunkModel, DenseField, SparseField
 
 
 class TextChunk(ChunkModel):

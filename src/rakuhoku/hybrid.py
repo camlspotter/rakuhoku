@@ -19,8 +19,8 @@ PointId = int | str | UUID
 ChunkT = TypeVar("ChunkT", bound=ChunkModel)
 ChunkU = TypeVar("ChunkU", bound=ChunkModel)
 
-COLLECTION_METADATA_KEY = "_rag_vectorizers"
-PAYLOAD_METADATA_KEY = "_rag_vectorizers"
+COLLECTION_METADATA_KEY = "_rakuhoku"
+PAYLOAD_METADATA_KEY = "_rakuhoku"
 SCHEMA_VERSION = 1
 
 
@@ -160,7 +160,7 @@ def _qdrant_models() -> Any:
         from qdrant_client import models
     except ImportError as error:
         raise RuntimeError(
-            "Qdrant support is optional; install rag-vectorizers[qdrant]"
+            "Qdrant support is optional; install rakuhoku[qdrant]"
         ) from error
     return models
 
@@ -298,7 +298,7 @@ class HybridQdrantDB(Generic[ChunkT]):
         if metadata.get(COLLECTION_METADATA_KEY) != self._collection_metadata()[
             COLLECTION_METADATA_KEY
         ]:
-            raise ValueError("collection rag-vectorizers metadata does not match")
+            raise ValueError("collection rakuhoku metadata does not match")
 
     @staticmethod
     def _chunk_payload(
@@ -411,7 +411,7 @@ class HybridQdrantDB(Generic[ChunkT]):
         library_payload = cast(dict[str, Any], library_payload_value)
         if not isinstance(library_payload_value, dict):
             raise ValueError(
-                f"Qdrant point {point.id!r} has no rag-vectorizers payload metadata"
+                f"Qdrant point {point.id!r} has no rakuhoku payload metadata"
             )
         if (
             library_payload.get("vectorization_schema_id")

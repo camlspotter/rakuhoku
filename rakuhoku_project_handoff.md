@@ -16,7 +16,7 @@
 提供する。Qdrantからの候補取得、payload解釈、score fusion、最終cutは引き続き
 アプリケーション側の責務とする。
 
-仮のプロジェクト名は `rag-vectorizers` とする。この名前は確定事項ではない。
+仮のプロジェクト名は `rakuhoku` とする。この名前は確定事項ではない。
 
 ## 2. 調査したソースのスナップショット
 
@@ -99,11 +99,11 @@
 ## 4. 推奨パッケージ構造
 
 ```text
-rag-vectorizers/
+rakuhoku/
 ├── pyproject.toml
 ├── README.md
 ├── src/
-│   └── rag_vectorizers/
+│   └── rakuhoku/
 │       ├── __init__.py
 │       ├── types.py
 │       ├── dense.py
@@ -646,12 +646,12 @@ raw JSON全体を評価対象にしない。
 ```toml
 [project]
 dependencies = [
-    "rag-vectorizers",
+    "rakuhoku",
 ]
 
 [tool.uv.sources]
-rag-vectorizers = {
-    git = "https://github.com/camlspotter/rag-vectorizers.git",
+rakuhoku = {
+    git = "https://github.com/camlspotter/rakuhoku.git",
     tag = "v0.1.0",
 }
 ```

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from rag_vectorizers.qdrant import (
+from rakuhoku.qdrant import (
     from_qdrant_sparse_vector,
     to_qdrant_sparse_vector,
 )
-from rag_vectorizers.types import SparseVector
+from rakuhoku.types import SparseVector
 
 
 def test_qdrant_round_trip() -> None:

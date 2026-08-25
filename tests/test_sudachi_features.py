@@ -6,9 +6,9 @@ from collections.abc import Iterable
 
 import pytest
 
-from rag_vectorizers.sparse import SudachiSparseEncoder
-from rag_vectorizers.sudachi import Morpheme
-from rag_vectorizers.types import SparseExplanation, SparseField
+from rakuhoku.sparse import SudachiSparseEncoder
+from rakuhoku.sudachi import Morpheme
+from rakuhoku.types import SparseExplanation, SparseField
 
 from .fakes import FakeTokenizer
 

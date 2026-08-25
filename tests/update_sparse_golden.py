@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from rag_vectorizers import SudachiSparseEncoder
+from rakuhoku import SudachiSparseEncoder
 
 from .golden_cases import GOLDEN_CASES
 

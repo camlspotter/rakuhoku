@@ -12,7 +12,7 @@ sparse検索ではrerank件数に十分な候補数を取得する必要があ�
 ## 2. API
 
 ```python
-from rag_vectorizers import SudachiLexicalReranker
+from rakuhoku import SudachiLexicalReranker
 
 reranker = SudachiLexicalReranker()
 

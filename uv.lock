@@ -960,7 +960,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rag-vectorizers"
+name = "rakuhoku"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -984,7 +984,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy", specifier = ">=2.0" },
+    { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.16,<1.17" },
     { name = "sentence-transformers", specifier = ">=5.1.1" },

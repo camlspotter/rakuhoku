@@ -8,7 +8,7 @@
 from collections.abc import Sequence
 from typing import ClassVar
 
-from rag_vectorizers import ChunkModel, DenseField, SparseField
+from rakuhoku import ChunkModel, DenseField, SparseField
 
 
 class RegulationChunk(ChunkModel):

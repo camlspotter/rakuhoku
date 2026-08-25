@@ -11,7 +11,7 @@ def to_qdrant_sparse_vector(vector: SparseVector) -> Any:
         from qdrant_client.models import SparseVector as QdrantSparseVector
     except ImportError as error:
         raise RuntimeError(
-            "Qdrant support is optional; install rag-vectorizers[qdrant]"
+            "Qdrant support is optional; install rakuhoku[qdrant]"
         ) from error
     return QdrantSparseVector(
         indices=list(vector.indices), values=list(vector.values)

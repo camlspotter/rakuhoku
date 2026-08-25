@@ -68,7 +68,7 @@ await db.upsert_chunks(
 生成する。`sparse_fields()`はフィールド名を加えず、独立した境界と重みを保ったまま
 sparse encoderへ渡す。
 
-元のPydantic payloadはトップレベルへ保存する。予約key`_rag_vectorizers`には、実際に
+元のPydantic payloadはトップレベルへ保存する。予約key`_rakuhoku`には、実際に
 vector化へ渡したdense文字列とsparse fields、`rerank_text()`の値、schema IDを保存する。
 検索時に外部ファイルや別のpayloadフィールドからrerank文字列を再構築しない。
 

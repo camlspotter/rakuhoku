@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from rag_vectorizers.dense import SentenceTransformerEncoder
+from rakuhoku.dense import SentenceTransformerEncoder
 
 
 class FakeModel:

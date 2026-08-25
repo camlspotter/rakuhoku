@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from rag_vectorizers.cache import SQLiteEmbeddingCache
+from rakuhoku.cache import SQLiteEmbeddingCache
 
 
 def test_cache_round_trip_and_dimension_mismatch(tmp_path: Path) -> None:
