@@ -23,10 +23,20 @@ closeは呼び出し側が管理する。
 | `chunk` | 指定した`ChunkModel`型へ復元したpayload |
 | `dense_score` | dense候補ならQdrant cosine score、sparseのみなら`None` |
 | `fulltext_score` | ローカル字句rerankerによる0〜1の比較値 |
-| `fulltext_explanation` | coverage、順序、距離などの内訳 |
+| `fulltext_explanation` | 通常は`None`。指定時のみcoverage、順序、距離などの内訳 |
 
 sparseのQdrant scoreは候補生成にだけ使い、返却しない。二つのscoreを一つに合成したり、
 異なるDBの結果を統合・重複排除したりする処理はクライアント側の責務である。
+
+説明が必要な場合は明示的に指定する。この引数は`search()`と
+`search_by_vectors()`の両方で使用できる。
+
+```python
+results = await db.search(
+    "利用できない",
+    with_fulltext_explanation=True,
+)
+```
 
 ## 作成と既存collectionのopen
 

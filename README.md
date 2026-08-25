@@ -103,6 +103,16 @@ for result in results:
     print(result.chunk, result.dense_score, result.fulltext_score)
 ```
 
+`fulltext_explanation`は通常`None`である。coverage、順序、距離などの内訳が必要な
+場合だけ、`with_fulltext_explanation=True`を指定する。
+
+```python
+results = await db.search(
+    "利用できない",
+    with_fulltext_explanation=True,
+)
+```
+
 sparse検索のQdrant scoreは候補取得にだけ使い、結果には残さない。dense由来、sparse由来の
 全候補に同じ全文検索rerankerを適用する。複数DBでquery vectorを再利用する場合は、
 `QueryVectorizer.encode()`で一度だけ`PreparedQuery`を作り、各DBの

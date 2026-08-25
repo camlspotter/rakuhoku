@@ -162,6 +162,7 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
             assert by_id[2].chunk == TextChunk(
                 title="sparse-only", text="この設備は利用できない"
             )
+            assert all(result.fulltext_explanation is None for result in results)
             assert all(result.collection_name == "chunks" for result in results)
             assert dense.query_calls == 1
             assert dense.document_calls == 1
@@ -195,10 +196,16 @@ def test_search_by_vectors_reuses_a_prepared_query() -> None:
             prepared = vectorizer.encode("利用できない")
 
             first = await db.search_by_vectors(prepared, sparse_limit=0)
-            second = await db.search_by_vectors(prepared, sparse_limit=0)
+            second = await db.search_by_vectors(
+                prepared,
+                sparse_limit=0,
+                with_fulltext_explanation=True,
+            )
 
             assert [result.point_id for result in first] == [10]
             assert [result.point_id for result in second] == [10]
+            assert first[0].fulltext_explanation is None
+            assert second[0].fulltext_explanation is not None
             assert dense.query_calls == 1
         finally:
             await client.close()

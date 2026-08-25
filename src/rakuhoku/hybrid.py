@@ -140,7 +140,7 @@ class ScoredChunk(Generic[ChunkT]):
     chunk: ChunkT
     dense_score: float | None
     fulltext_score: float
-    fulltext_explanation: RerankExplanation
+    fulltext_explanation: RerankExplanation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +431,7 @@ class HybridQdrantDB(Generic[ChunkT]):
         dense_limit: int = 50,
         sparse_limit: int = 50,
         query_filter: Any | None = None,
+        with_fulltext_explanation: bool = False,
     ) -> list[ScoredChunk[ChunkT]]:
         """Search one DB, union candidates, and add a lexical full-text score."""
         if dense_limit < 0 or sparse_limit < 0:
@@ -502,7 +503,9 @@ class HybridQdrantDB(Generic[ChunkT]):
                 chunk=candidate.chunk,
                 dense_score=candidate.dense_score,
                 fulltext_score=item.score,
-                fulltext_explanation=item.explanation,
+                fulltext_explanation=(
+                    item.explanation if with_fulltext_explanation else None
+                ),
             )
             for item in query_tokens_results
         ]
@@ -515,6 +518,7 @@ class HybridQdrantDB(Generic[ChunkT]):
         dense_limit: int = 50,
         sparse_limit: int = 50,
         query_filter: Any | None = None,
+        with_fulltext_explanation: bool = False,
     ) -> list[ScoredChunk[ChunkT]]:
         """Standard one-DB search: encode, retrieve, union, and rerank."""
         prepared = await asyncio.to_thread(self.vectorizer.encode, query_text)
@@ -523,4 +527,5 @@ class HybridQdrantDB(Generic[ChunkT]):
             dense_limit=dense_limit,
             sparse_limit=sparse_limit,
             query_filter=query_filter,
+            with_fulltext_explanation=with_fulltext_explanation,
         )
