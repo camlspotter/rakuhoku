@@ -966,14 +966,10 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
+    { name = "qdrant-client" },
     { name = "sentence-transformers" },
     { name = "sudachidict-core" },
     { name = "sudachipy" },
-]
-
-[package.optional-dependencies]
-qdrant = [
-    { name = "qdrant-client" },
 ]
 
 [package.dev-dependencies]
@@ -986,12 +982,11 @@ dev = [
 requires-dist = [
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.16,<1.17" },
+    { name = "qdrant-client", specifier = ">=1.16,<1.17" },
     { name = "sentence-transformers", specifier = ">=5.1.1" },
     { name = "sudachidict-core", specifier = "==20260116" },
     { name = "sudachipy", specifier = "==0.6.10" },
 ]
-provides-extras = ["qdrant"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -8,6 +8,7 @@ from uuid import UUID
 
 import numpy as np
 from numpy.typing import NDArray
+from qdrant_client import models
 
 from .chunk import ChunkModel
 from .rerank import RerankExplanation, SudachiLexicalReranker
@@ -156,12 +157,6 @@ def render_dense_fields(fields: Sequence[DenseField]) -> str:
 
 
 def _qdrant_models() -> Any:
-    try:
-        from qdrant_client import models
-    except ImportError as error:
-        raise RuntimeError(
-            "Qdrant support is optional; install rakuhoku[qdrant]"
-        ) from error
     return models
 
 

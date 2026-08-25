@@ -46,11 +46,11 @@ weighted = encoder.encode(
 explanation = encoder.explain("研究所")
 ```
 
-中核となる`SparseVector`型はQdrantに依存しない。Qdrantへの変換が必要な環境だけ、
-オプションのアダプターをインストールする。
+中核となる`SparseVector`型はQdrantの型から分離されており、標準で提供する
+アダプターを介してQdrantの疎ベクトルへ変換する。
 
 ```console
-uv add 'rakuhoku[qdrant]'
+uv add rakuhoku
 ```
 
 ```python
@@ -174,7 +174,7 @@ class TextChunk(ChunkModel):
 ## 開発
 
 ```console
-uv sync --extra qdrant
+uv sync
 uv run pytest
 uv run pyright
 ```

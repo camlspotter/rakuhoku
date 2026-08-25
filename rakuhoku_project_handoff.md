@@ -120,8 +120,8 @@ rakuhoku/
     └── test_qdrant_adapter.py
 ```
 
-`qdrant.py` はoptional dependencyとし、coreのsparse encoderが
-`qdrant_client.models.SparseVector` を直接返さない構成を推奨する。
+`qdrant.py` は標準で提供し、coreの`SparseVector`型とQdrantの型の境界を
+アダプターとして明示する。
 
 ```python
 from dataclasses import dataclass
