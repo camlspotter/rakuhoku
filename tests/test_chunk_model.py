@@ -44,6 +44,7 @@ def test_chunk_model_keeps_client_fields_and_vectorization_separate() -> None:
         DenseField("title", "規程"),
         DenseField("body", "利用できない"),
     )
+    assert chunk.dense_text() == "title: 規程\nbody: 利用できない"
     assert chunk.sparse_fields() == (
         SparseField("規程", weight=2.0),
         SparseField("利用できない"),
@@ -57,6 +58,16 @@ def test_chunk_model_methods_can_apply_client_fallbacks() -> None:
     assert chunk.dense_fields()[1] == DenseField("body", "自動生成された概要")
     assert chunk.sparse_fields()[1] == SparseField("自動生成された概要")
     assert chunk.rerank_text() == "自動生成された概要"
+
+
+def test_chunk_model_can_preserve_a_custom_dense_text_format() -> None:
+    class CustomDenseTextChunk(ExampleChunk):
+        def dense_text(self) -> str:
+            return f"{self.title}\n\n{self.body}\n"
+
+    chunk = CustomDenseTextChunk(title="規程", body="利用できない")
+
+    assert chunk.dense_text() == "規程\n\n利用できない\n"
 
 
 def test_chunk_model_remains_abstract_without_required_methods() -> None:

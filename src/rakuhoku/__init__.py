@@ -1,4 +1,4 @@
-from .chunk import ChunkModel
+from .chunk import ChunkModel, render_dense_fields
 from .dense import SentenceTransformerEncoder
 from .hybrid import (
     ChunkPoint,
@@ -7,7 +7,6 @@ from .hybrid import (
     PreparedQuery,
     QueryVectorizer,
     ScoredChunk,
-    render_dense_fields,
 )
 from .rerank import (
     RerankConfig,

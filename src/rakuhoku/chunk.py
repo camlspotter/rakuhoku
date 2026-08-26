@@ -9,6 +9,11 @@ from pydantic import BaseModel
 from .types import DenseField, SparseField
 
 
+def render_dense_fields(fields: Sequence[DenseField]) -> str:
+    """Render named dense fields in the collection-wide fixed format."""
+    return "\n".join(f"{field.name}: {field.text}" for field in fields)
+
+
 class ChunkModel(BaseModel, ABC):
     """Client-defined, validated chunk with a fixed vectorization contract.
 
@@ -23,6 +28,10 @@ class ChunkModel(BaseModel, ABC):
     @abstractmethod
     def dense_fields(self) -> Sequence[DenseField]:
         """Return ordered, named fields used to construct dense input."""
+
+    def dense_text(self) -> str:
+        """Return the exact text passed to the dense document encoder."""
+        return render_dense_fields(self.dense_fields())
 
     @abstractmethod
     def sparse_fields(self) -> Sequence[SparseField]:

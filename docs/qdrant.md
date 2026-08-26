@@ -74,9 +74,9 @@ await db.upsert_chunks(
 )
 ```
 
-ライブラリは`dense_fields()`を`name: text`の改行区切りで描画し、文書dense vectorを
-生成する。`sparse_fields()`はフィールド名を加えず、独立した境界と重みを保ったまま
-sparse encoderへ渡す。
+ライブラリは`dense_text()`の値から文書dense vectorを生成する。既定の`dense_text()`は
+`dense_fields()`を`name: text`の改行区切りで描画する。`sparse_fields()`はフィールド名を
+加えず、独立した境界と重みを保ったままsparse encoderへ渡す。
 
 元のPydantic payloadはトップレベルへ保存する。予約key`_rakuhoku`には、実際に
 vector化へ渡したdense文字列とsparse fields、`rerank_text()`の値、schema IDを保存する。

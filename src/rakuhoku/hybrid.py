@@ -13,7 +13,7 @@ from qdrant_client import models
 
 from .chunk import ChunkModel
 from .rerank import RerankExplanation, SudachiLexicalReranker
-from .types import DenseField, SparseField, SparseVector
+from .types import SparseField, SparseVector
 
 
 FloatVector = NDArray[np.float32]
@@ -158,11 +158,6 @@ class _Candidate(Generic[ChunkT]):
     chunk: ChunkT
     rerank_text: str
     dense_score: float | None
-
-
-def render_dense_fields(fields: Sequence[DenseField]) -> str:
-    """Render named dense fields in the collection-wide fixed format."""
-    return "\n".join(f"{field.name}: {field.text}" for field in fields)
 
 
 def _qdrant_models() -> Any:
@@ -343,7 +338,7 @@ class HybridQdrantDB(Generic[ChunkT]):
             if chunk.vectorization_schema_id != self.config.vectorization_schema_id:
                 raise ValueError("chunk vectorization schema does not match collection")
 
-        dense_texts = [render_dense_fields(chunk.dense_fields()) for chunk in chunks]
+        dense_texts = [chunk.dense_text() for chunk in chunks]
         sparse_fields = [tuple(chunk.sparse_fields()) for chunk in chunks]
         rerank_texts = [chunk.rerank_text() for chunk in chunks]
         dense_vectors = await asyncio.to_thread(

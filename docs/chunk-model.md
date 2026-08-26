@@ -42,7 +42,13 @@ class RegulationChunk(ChunkModel):
 ### `dense_fields()`
 
 dense入力に使うフィールドを、`DenseField(name, text)`の順序付きシーケンスとして返す。
-Qdrant統合APIは、各要素を`name: text`形式で改行連結する。
+既定の`dense_text()`は、各要素を`name: text`形式で改行連結する。
+
+### `dense_text()`
+
+dense document encoderへ渡す正確な文字列を返す。既定実装は`dense_fields()`を
+`name: text`形式で改行連結する。既存のembedding cacheやvectorとの互換性のために
+空白・改行・ラベルを維持する必要がある場合だけ上書きする。
 
 ### `sparse_fields()`
 
@@ -58,7 +64,7 @@ sparse入力に使う値を`SparseField(text, weight)`として返す。`SparseF
 ## Vectorization schema ID
 
 `vectorization_schema_id`はPydanticのpayloadフィールドではなくクラス変数である。同じ
-Qdrantコレクションへ登録するchunkは同じIDを使用する。3つのメソッドのフィールド選択、
+Qdrantコレクションへ登録するchunkは同じIDを使用する。4つのメソッドのフィールド選択、
 順序、ラベル、fallback、重み、rerank対象を変更した場合はIDも変更する。
 
 `HybridQdrantDB.create()`はIDをcollection metadataへ保存し、`open()`で一致を検証する。

@@ -145,7 +145,9 @@ for result in results:
 
 アプリケーション固有のchunkは、`ChunkModel`を継承したPydanticモデルとして定義できる。
 `dense_fields()`、`sparse_fields()`、`rerank_text()`により、構造化payloadとvector化・
-reranking用テキストの作り方を分離する。ライブラリはpayload全体の共通スキーマを規定しない。
+reranking用テキストの作り方を分離する。`dense_text()`は既定で`dense_fields()`を
+`name: text`形式に描画するが、既存のembedding cacheと入力形式を維持したい場合は上書きできる。
+ライブラリはpayload全体の共通スキーマを規定しない。
 
 ```python
 from collections.abc import Sequence
