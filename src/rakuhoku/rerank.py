@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unicodedata
 from dataclasses import dataclass
 from typing import Literal, Sequence
@@ -8,6 +9,12 @@ from .sudachi import Morpheme, SudachiTokenizer
 
 
 MatchKind = Literal["exact", "synonym", "ngram"]
+
+
+def _assert_fulltext_score(score: float) -> float:
+    assert math.isfinite(score), f"fulltext_score must be finite, got {score!r}"
+    assert 0.0 <= score <= 1.0, f"fulltext_score must be in [0, 1], got {score!r}"
+    return score
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,11 +405,14 @@ class SudachiLexicalReranker:
             + self.config.order_weight
             + self.config.proximity_weight
         )
-        score = (
-            self.config.coverage_weight * coverage_score
-            + self.config.order_weight * order_score
-            + self.config.proximity_weight * proximity_score
-        ) / weight_total
+        score = _assert_fulltext_score(
+            (
+                self.config.coverage_weight * coverage_score
+                + self.config.order_weight * order_score
+                + self.config.proximity_weight * proximity_score
+            )
+            / weight_total
+        )
         return RerankExplanation(
             score=score,
             coverage_score=coverage_score,

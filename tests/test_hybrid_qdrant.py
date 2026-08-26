@@ -17,6 +17,7 @@ from rakuhoku import (
     HybridQdrantDB,
     PreparedQuery,
     QueryVectorizer,
+    ScoredChunk,
     SparseField,
     SparseVector,
 )
@@ -107,6 +108,34 @@ def test_query_vectorizer_prepares_reusable_vectors() -> None:
     assert prepared.dense_model_id == "fake-dense-v1"
     assert prepared.sparse_algorithm_id == "fake-sparse-v1"
     assert dense.query_calls == 1
+
+
+@pytest.mark.parametrize("score", [0.0, 0.5, 1.0])
+def test_scored_chunk_accepts_finite_unit_fulltext_score(score: float) -> None:
+    result = ScoredChunk(
+        collection_name="chunks",
+        point_id=1,
+        chunk=TextChunk(title="title", text="text"),
+        dense_score=None,
+        fulltext_score=score,
+    )
+
+    assert result.fulltext_score == score
+
+
+@pytest.mark.parametrize(
+    "score",
+    [float("nan"), float("inf"), float("-inf"), -0.001, 1.001],
+)
+def test_scored_chunk_rejects_invalid_fulltext_score(score: float) -> None:
+    with pytest.raises(AssertionError, match="fulltext_score"):
+        ScoredChunk(
+            collection_name="chunks",
+            point_id=1,
+            chunk=TextChunk(title="title", text="text"),
+            dense_score=None,
+            fulltext_score=score,
+        )
 
 
 def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:

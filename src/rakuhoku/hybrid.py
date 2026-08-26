@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, Protocol, TypeVar, cast
@@ -141,6 +142,14 @@ class ScoredChunk(Generic[ChunkT]):
     dense_score: float | None
     fulltext_score: float
     fulltext_explanation: RerankExplanation | None = None
+
+    def __post_init__(self) -> None:
+        assert math.isfinite(self.fulltext_score), (
+            f"fulltext_score must be finite, got {self.fulltext_score!r}"
+        )
+        assert 0.0 <= self.fulltext_score <= 1.0, (
+            f"fulltext_score must be in [0, 1], got {self.fulltext_score!r}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
