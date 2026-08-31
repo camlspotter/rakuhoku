@@ -9,7 +9,7 @@ from .golden_cases import GOLDEN_CASES
 
 
 def test_sparse_golden_vectors() -> None:
-    path = Path(__file__).parent / "golden" / "sudachi_sparse_v1.json"
+    path = Path(__file__).parent / "golden" / "sudachi_sparse_v2.json"
     golden = json.loads(path.read_text(encoding="utf-8"))
     encoder = SudachiSparseEncoder()
 

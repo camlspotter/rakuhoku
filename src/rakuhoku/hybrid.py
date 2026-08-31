@@ -4,16 +4,17 @@ import asyncio
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Generic, Protocol, TypeVar
 from uuid import UUID
 
 import numpy as np
 from numpy.typing import NDArray
-from qdrant_client import models
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
+from qdrant_client import AsyncQdrantClient, models
 
 from .chunk import ChunkModel
 from .rerank import RerankExplanation, SudachiLexicalReranker
-from .types import SparseField, SparseVector
+from .types import SparseField
 
 
 FloatVector = NDArray[np.float32]
@@ -21,9 +22,9 @@ PointId = int | str | UUID
 ChunkT = TypeVar("ChunkT", bound=ChunkModel)
 ChunkU = TypeVar("ChunkU", bound=ChunkModel)
 
-COLLECTION_METADATA_KEY = "_rakuhoku"
-PAYLOAD_METADATA_KEY = "_rakuhoku"
+COLLECTION_METADATA_KEY = "_rakuhoku" # XXX not required
 SCHEMA_VERSION = 1
+PAYLOAD_ADAPTER = TypeAdapter(dict[str, JsonValue])
 
 
 class DenseEncoder(Protocol):
@@ -41,24 +42,36 @@ class SparseEncoder(Protocol):
     @property
     def algorithm_id(self) -> str: ...
 
-    def encode(self, value: str | Sequence[SparseField]) -> SparseVector: ...
+    def encode(
+        self, value: str | Sequence[SparseField]
+    ) -> models.SparseVector: ...
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedQuery:
-    """Dense and sparse representations computed once for reuse across DBs."""
-
-    text: str
-    dense_vector: FloatVector
-    sparse_vector: SparseVector
-    dense_model_id: str
-    sparse_algorithm_id: str
+class PreparedDenseQuery:
+    vector: FloatVector
 
     def __post_init__(self) -> None:
-        dense = np.asarray(self.dense_vector, dtype=np.float32)
+        dense = np.asarray(self.vector, dtype=np.float32)
         if dense.ndim != 1:
-            raise ValueError("dense_vector must be one-dimensional")
-        object.__setattr__(self, "dense_vector", dense)
+            raise ValueError("dense query vector must be one-dimensional")
+        object.__setattr__(self, "vector", dense)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSparseQuery:
+    text: str
+    vector: models.SparseVector
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSearch:
+    """Multiple prepared dense and sparse queries for one search."""
+
+    dense_queries: list[PreparedDenseQuery]
+    sparse_queries: list[PreparedSparseQuery]
+    dense_model_id: str
+    sparse_algorithm_id: str
 
 
 class QueryVectorizer:
@@ -82,18 +95,32 @@ class QueryVectorizer:
     def dense_dimension(self) -> int:
         return self.dense_encoder.dimension
 
-    def encode_dense(self, query: str) -> FloatVector:
-        vectors = self.dense_encoder.encode_queries([query])
-        return np.asarray(vectors[0], dtype=np.float32)
-
-    def encode_sparse(self, query: str) -> SparseVector:
-        return self.sparse_encoder.encode(query)
-
-    def encode(self, query: str) -> PreparedQuery:
-        return PreparedQuery(
-            text=query,
-            dense_vector=self.encode_dense(query),
-            sparse_vector=self.encode_sparse(query),
+    def prepare(
+        self,
+        *,
+        dense_queries: Sequence[str],
+        sparse_queries: Sequence[str],
+    ) -> PreparedSearch:
+        dense_texts = list(dense_queries)
+        dense_vectors = (
+            self.dense_encoder.encode_queries(dense_texts)
+            if dense_texts
+            else np.empty((0, self.dense_dimension), dtype=np.float32)
+        )
+        if dense_vectors.shape != (len(dense_texts), self.dense_dimension):
+            raise RuntimeError("dense encoder returned an unexpected query shape")
+        return PreparedSearch(
+            dense_queries=[
+                PreparedDenseQuery(vector=dense_vectors[index])
+                for index in range(len(dense_texts))
+            ],
+            sparse_queries=[
+                PreparedSparseQuery(
+                    text=text,
+                    vector=self.sparse_encoder.encode(text),
+                )
+                for text in sparse_queries
+            ],
             dense_model_id=self.dense_model_id,
             sparse_algorithm_id=self.sparse_algorithm_id,
         )
@@ -134,13 +161,14 @@ class ChunkPoint(Generic[ChunkT]):
 
 @dataclass(frozen=True, slots=True)
 class ScoredChunk(Generic[ChunkT]):
-    """A union candidate with independent dense and full-text scores."""
+    """A union candidate with dense, raw Sparse, and fused full-text scores."""
 
     collection_name: str
     point_id: PointId
     chunk: ChunkT
     dense_score: float | None
     fulltext_score: float
+    sparse_score: float | None = None
     fulltext_explanation: RerankExplanation | None = None
 
     def __post_init__(self) -> None:
@@ -150,6 +178,13 @@ class ScoredChunk(Generic[ChunkT]):
         assert 0.0 <= self.fulltext_score <= 1.0, (
             f"fulltext_score must be in [0, 1], got {self.fulltext_score!r}"
         )
+        if self.sparse_score is not None:
+            assert math.isfinite(self.sparse_score), (
+                f"sparse_score must be finite, got {self.sparse_score!r}"
+            )
+            assert self.sparse_score >= 0.0, (
+                f"sparse_score must be non-negative, got {self.sparse_score!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,8 +195,15 @@ class _Candidate(Generic[ChunkT]):
     dense_score: float | None
 
 
-def _qdrant_models() -> Any:
-    return models
+class _CollectionMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int
+    dense_model_id: str
+    sparse_algorithm_id: str
+    vectorization_schema_id: str
+    dense_vector_name: str
+    sparse_vector_name: str
 
 
 class HybridQdrantDB(Generic[ChunkT]):
@@ -170,7 +212,7 @@ class HybridQdrantDB(Generic[ChunkT]):
     def __init__(
         self,
         *,
-        client: Any,
+        client: AsyncQdrantClient,
         config: HybridDBConfig,
         chunk_type: type[ChunkT],
         vectorizer: QueryVectorizer,
@@ -187,7 +229,7 @@ class HybridQdrantDB(Generic[ChunkT]):
     async def create(
         cls,
         *,
-        client: Any,
+        client: AsyncQdrantClient,
         config: HybridDBConfig,
         chunk_type: type[ChunkU],
         vectorizer: QueryVectorizer,
@@ -204,7 +246,6 @@ class HybridQdrantDB(Generic[ChunkT]):
             raise ValueError(
                 f"Qdrant collection {config.collection_name!r} already exists"
             )
-        models = _qdrant_models()
         await client.create_collection(
             collection_name=config.collection_name,
             vectors_config={
@@ -226,7 +267,7 @@ class HybridQdrantDB(Generic[ChunkT]):
     async def open(
         cls,
         *,
-        client: Any,
+        client: AsyncQdrantClient,
         config: HybridDBConfig,
         chunk_type: type[ChunkU],
         vectorizer: QueryVectorizer,
@@ -258,27 +299,28 @@ class HybridQdrantDB(Generic[ChunkT]):
         if self.chunk_type.vectorization_schema_id != config.vectorization_schema_id:
             raise ValueError("chunk schema does not match DB configuration")
 
-    def _collection_metadata(self) -> dict[str, Any]:
+    def _rakuhoku_metadata(self) -> _CollectionMetadata:
         config = self.config
+        return _CollectionMetadata(
+            schema_version=SCHEMA_VERSION,
+            dense_model_id=config.dense_model_id,
+            sparse_algorithm_id=config.sparse_algorithm_id,
+            vectorization_schema_id=config.vectorization_schema_id,
+            dense_vector_name=config.dense_vector_name,
+            sparse_vector_name=config.sparse_vector_name,
+        )
+
+    def _collection_metadata(self) -> dict[str, object]:
         return {
-            COLLECTION_METADATA_KEY: {
-                "schema_version": SCHEMA_VERSION,
-                "dense_model_id": config.dense_model_id,
-                "sparse_algorithm_id": config.sparse_algorithm_id,
-                "vectorization_schema_id": config.vectorization_schema_id,
-                "dense_vector_name": config.dense_vector_name,
-                "sparse_vector_name": config.sparse_vector_name,
-            }
+            COLLECTION_METADATA_KEY: self._rakuhoku_metadata().model_dump()
         }
 
-    def _validate_collection(self, info: Any) -> None:
-        models = _qdrant_models()
-        vectors: Any = info.config.params.vectors
-        sparse_vectors: Any = info.config.params.sparse_vectors
+    def _validate_collection(self, info: models.CollectionInfo) -> None:
+        vectors = info.config.params.vectors
+        sparse_vectors = info.config.params.sparse_vectors
         if not isinstance(vectors, dict):
             raise ValueError("collection does not use named dense vectors")
-        dense_vectors = cast(dict[str, Any], vectors)
-        dense = dense_vectors.get(self.config.dense_vector_name)
+        dense = vectors.get(self.config.dense_vector_name)
         if dense is None:
             raise ValueError("configured dense vector is missing from collection")
         if dense.size != self.config.dense_dimension:
@@ -287,48 +329,32 @@ class HybridQdrantDB(Generic[ChunkT]):
             raise ValueError("collection dense vector must use cosine distance")
         if not isinstance(sparse_vectors, dict):
             raise ValueError("collection has no named sparse vectors")
-        named_sparse_vectors = cast(dict[str, Any], sparse_vectors)
-        sparse = named_sparse_vectors.get(self.config.sparse_vector_name)
+        sparse = sparse_vectors.get(self.config.sparse_vector_name)
         if sparse is None:
             raise ValueError("configured sparse vector is missing from collection")
         if sparse.modifier != models.Modifier.IDF:
             raise ValueError("collection sparse vector must use Modifier.IDF")
-        metadata = cast(dict[str, Any], info.config.metadata or {})
-        if metadata.get(COLLECTION_METADATA_KEY) != self._collection_metadata()[
-            COLLECTION_METADATA_KEY
-        ]:
+        metadata: object = info.config.metadata
+        if not isinstance(metadata, dict):
+            raise ValueError("collection has no rakuhoku metadata")
+        try:
+            stored_metadata = _CollectionMetadata.model_validate(
+                metadata.get(COLLECTION_METADATA_KEY)
+            )
+        except ValidationError as exc:
+            raise ValueError("collection rakuhoku metadata is invalid") from exc
+        if stored_metadata != self._rakuhoku_metadata():
             raise ValueError("collection rakuhoku metadata does not match")
 
     @staticmethod
-    def _chunk_payload(
-        chunk: ChunkModel,
-        *,
-        dense_text: str,
-        sparse_fields: Sequence[SparseField],
-        rerank_text: str,
-    ) -> dict[str, Any]:
-        payload = chunk.model_dump(mode="json")
-        if PAYLOAD_METADATA_KEY in payload:
-            raise ValueError(
-                f"chunk payload uses reserved key {PAYLOAD_METADATA_KEY!r}"
-            )
-        payload[PAYLOAD_METADATA_KEY] = {
-            "dense_text": dense_text,
-            "sparse_fields": [
-                {"text": field.text, "weight": field.weight}
-                for field in sparse_fields
-            ],
-            "rerank_text": rerank_text,
-            "vectorization_schema_id": chunk.vectorization_schema_id,
-        }
-        return payload
+    def _chunk_payload(chunk: ChunkModel) -> dict[str, JsonValue]:
+        return PAYLOAD_ADAPTER.validate_python(chunk.model_dump(mode="json"))
 
     async def upsert_chunks(
         self, points: Sequence[ChunkPoint[ChunkT]], *, wait: bool = True
     ) -> None:
         if not points:
             return
-        models = _qdrant_models()
         chunks = [point.chunk for point in points]
         for chunk in chunks:
             if not isinstance(chunk, self.chunk_type):
@@ -338,36 +364,31 @@ class HybridQdrantDB(Generic[ChunkT]):
             if chunk.vectorization_schema_id != self.config.vectorization_schema_id:
                 raise ValueError("chunk vectorization schema does not match collection")
 
+        # Dense
         dense_texts = [chunk.dense_text() for chunk in chunks]
-        sparse_fields = [tuple(chunk.sparse_fields()) for chunk in chunks]
-        rerank_texts = [chunk.rerank_text() for chunk in chunks]
         dense_vectors = await asyncio.to_thread(
             self.vectorizer.dense_encoder.encode_documents, dense_texts
         )
         if dense_vectors.shape != (len(chunks), self.config.dense_dimension):
             raise RuntimeError("dense encoder returned an unexpected vector shape")
+
+        # Sparse
+        sparse_fields = [tuple(chunk.sparse_fields()) for chunk in chunks]
         sparse_vectors = await asyncio.to_thread(
             lambda: [
                 self.vectorizer.sparse_encoder.encode(fields)
                 for fields in sparse_fields
             ]
         )
+
         qdrant_points = [
             models.PointStruct(
                 id=point.id,
                 vector={
                     self.config.dense_vector_name: dense_vectors[index].tolist(),
-                    self.config.sparse_vector_name: models.SparseVector(
-                        indices=list(sparse_vectors[index].indices),
-                        values=list(sparse_vectors[index].values),
-                    ),
+                    self.config.sparse_vector_name: sparse_vectors[index],
                 },
-                payload=self._chunk_payload(
-                    point.chunk,
-                    dense_text=dense_texts[index],
-                    sparse_fields=sparse_fields[index],
-                    rerank_text=rerank_texts[index],
-                ),
+                payload=self._chunk_payload(point.chunk),
             )
             for index, point in enumerate(points)
         ]
@@ -382,75 +403,67 @@ class HybridQdrantDB(Generic[ChunkT]):
     ) -> None:
         if not point_ids:
             return
-        models = _qdrant_models()
         await self.client.delete(
             collection_name=self.config.collection_name,
             points_selector=models.PointIdsList(points=list(point_ids)),
             wait=wait,
         )
 
-    def _validate_prepared_query(self, query: PreparedQuery) -> None:
-        if query.dense_model_id != self.config.dense_model_id:
+    def _validate_prepared_search(self, search: PreparedSearch) -> None:
+        if search.dense_model_id != self.config.dense_model_id:
             raise ValueError("query dense model does not match collection")
-        if query.sparse_algorithm_id != self.config.sparse_algorithm_id:
+        if search.sparse_algorithm_id != self.config.sparse_algorithm_id:
             raise ValueError("query sparse algorithm does not match collection")
-        if query.dense_vector.shape != (self.config.dense_dimension,):
-            raise ValueError("query dense vector dimension does not match collection")
+        if any(
+            query.vector.shape != (self.config.dense_dimension,)
+            for query in search.dense_queries
+        ):
+            raise ValueError("dense query vector dimension does not match collection")
 
     def _candidate_from_point(
         self,
-        point: Any,
+        point: models.ScoredPoint,
         *,
         dense_score: float | None,
     ) -> _Candidate[ChunkT]:
         if point.payload is None:
             raise ValueError(f"Qdrant point {point.id!r} has no payload")
-        payload = dict(cast(dict[str, Any], point.payload))
-        library_payload_value = payload.pop(PAYLOAD_METADATA_KEY, None)
-        library_payload = cast(dict[str, Any], library_payload_value)
-        if not isinstance(library_payload_value, dict):
-            raise ValueError(
-                f"Qdrant point {point.id!r} has no rakuhoku payload metadata"
-            )
-        if (
-            library_payload.get("vectorization_schema_id")
-            != self.config.vectorization_schema_id
-        ):
-            raise ValueError(f"Qdrant point {point.id!r} has an incompatible schema")
-        rerank_text = library_payload.get("rerank_text")
-        if not isinstance(rerank_text, str):
-            raise ValueError(f"Qdrant point {point.id!r} has no rerank text")
-        chunk = self.chunk_type.model_validate(payload)
+        chunk = self.chunk_type.model_validate(point.payload)
+        point_id = point.id
+        if not isinstance(point_id, (int, str, UUID)):
+            raise TypeError(f"Qdrant point has unsupported id {point_id!r}")
         return _Candidate(
-            point_id=cast(PointId, point.id),
+            point_id=point_id,
             chunk=chunk,
-            rerank_text=rerank_text,
+            rerank_text=chunk.rerank_text(),
             dense_score=dense_score,
         )
 
     async def search_by_vectors(
         self,
-        query: PreparedQuery,
+        search: PreparedSearch,
         *,
         dense_limit: int = 50,
         sparse_limit: int = 50,
-        query_filter: Any | None = None,
+        query_filter: models.Filter | None = None,
         with_fulltext_explanation: bool = False,
     ) -> list[ScoredChunk[ChunkT]]:
         """Search one DB, union candidates, and add a lexical full-text score."""
         if dense_limit < 0 or sparse_limit < 0:
             raise ValueError("search limits must be non-negative")
-        if dense_limit == 0 and sparse_limit == 0:
+        self._validate_prepared_search(search)
+        if (
+            (dense_limit == 0 or not search.dense_queries)
+            and (sparse_limit == 0 or not search.sparse_queries)
+        ):
             return []
-        self._validate_prepared_query(query)
-        models = _qdrant_models()
 
-        async def dense_search() -> list[Any]:
-            if dense_limit == 0:
-                return []
+        async def dense_search(
+            query: PreparedDenseQuery,
+        ) -> list[models.ScoredPoint]:
             response = await self.client.query_points(
                 collection_name=self.config.collection_name,
-                query=query.dense_vector.tolist(),
+                query=query.vector.tolist(),
                 using=self.config.dense_vector_name,
                 query_filter=query_filter,
                 limit=dense_limit,
@@ -459,15 +472,14 @@ class HybridQdrantDB(Generic[ChunkT]):
             )
             return list(response.points)
 
-        async def sparse_search() -> list[Any]:
-            if sparse_limit == 0 or not query.sparse_vector.indices:
+        async def sparse_search(
+            query: PreparedSparseQuery,
+        ) -> list[models.ScoredPoint]:
+            if not query.vector.indices:
                 return []
             response = await self.client.query_points(
                 collection_name=self.config.collection_name,
-                query=models.SparseVector(
-                    indices=list(query.sparse_vector.indices),
-                    values=list(query.sparse_vector.values),
-                ),
+                query=query.vector,
                 using=self.config.sparse_vector_name,
                 query_filter=query_filter,
                 limit=sparse_limit,
@@ -476,56 +488,130 @@ class HybridQdrantDB(Generic[ChunkT]):
             )
             return list(response.points)
 
-        dense_points, sparse_points = await asyncio.gather(
-            dense_search(), sparse_search()
+        dense_calls = (
+            [dense_search(query) for query in search.dense_queries]
+            if dense_limit > 0
+            else []
         )
+        sparse_calls = (
+            [sparse_search(query) for query in search.sparse_queries]
+            if sparse_limit > 0
+            else []
+        )
+        result_sets = await asyncio.gather(*(dense_calls + sparse_calls))
+        dense_result_sets = result_sets[: len(dense_calls)]
+        sparse_result_sets = result_sets[len(dense_calls) :]
+
         candidates: dict[PointId, _Candidate[ChunkT]] = {}
-        for point in dense_points:
-            point_id = cast(PointId, point.id)
-            candidates[point_id] = self._candidate_from_point(
-                point,
-                dense_score=float(point.score),
-            )
-        for point in sparse_points:
-            point_id = cast(PointId, point.id)
-            if point_id not in candidates:
-                candidates[point_id] = self._candidate_from_point(
+        for result_set in dense_result_sets:
+            for point in result_set:
+                candidate = self._candidate_from_point(
+                    point,
+                    dense_score=float(point.score),
+                )
+                previous = candidates.get(candidate.point_id)
+                if (
+                    previous is None
+                    or previous.dense_score is None
+                    or (
+                        candidate.dense_score is not None
+                        and candidate.dense_score > previous.dense_score
+                    )
+                ):
+                    candidates[candidate.point_id] = candidate
+        for result_set in sparse_result_sets:
+            for point in result_set:
+                candidate = self._candidate_from_point(
                     point,
                     dense_score=None,
                 )
+                if candidate.point_id not in candidates:
+                    candidates[candidate.point_id] = candidate
 
-        query_tokens_results = await asyncio.to_thread(
-            self.reranker.rerank,
-            query.text,
-            [candidate.rerank_text for candidate in candidates.values()],
-        )
         candidate_list = list(candidates.values())
+        rerank_texts = [candidate.rerank_text for candidate in candidate_list]
+        reranked_sets = await asyncio.to_thread(
+            lambda: [
+                self.reranker.rerank(query.text, rerank_texts)
+                for query in search.sparse_queries
+            ]
+        )
+        fulltext_scores = [0.0 for _ in candidate_list]
+        sparse_scores: list[float | None] = [None for _ in candidate_list]
+        explanations: list[RerankExplanation | None] = [
+            None for _ in candidate_list
+        ]
+        config = self.reranker.config
+        score_weight_total = (
+            config.sparse_weight
+            + config.order_weight
+            + config.proximity_weight
+        )
+        for result_set, reranked in zip(sparse_result_sets, reranked_sets):
+            raw_scores = {
+                point.id: float(point.score)
+                for point in result_set
+            }
+            maximum_sparse_score = max(raw_scores.values(), default=0.0)
+            for item in reranked:
+                point_id = candidate_list[item.original_index].point_id
+                sparse_score = raw_scores.get(point_id)
+                if sparse_score is None:
+                    continue
+                normalized_sparse_score = (
+                    sparse_score / maximum_sparse_score
+                    if maximum_sparse_score > 0.0
+                    else 0.0
+                )
+                fulltext_score = (
+                    config.sparse_weight * normalized_sparse_score
+                    + config.order_weight * item.explanation.order_score
+                    + config.proximity_weight
+                    * item.explanation.proximity_score
+                ) / score_weight_total
+                if (
+                    explanations[item.original_index] is None
+                    or fulltext_score > fulltext_scores[item.original_index]
+                ):
+                    fulltext_scores[item.original_index] = fulltext_score
+                    sparse_scores[item.original_index] = sparse_score
+                    explanations[item.original_index] = item.explanation
+
         results = [
             ScoredChunk(
                 collection_name=self.config.collection_name,
-                point_id=(candidate := candidate_list[item.original_index]).point_id,
+                point_id=candidate.point_id,
                 chunk=candidate.chunk,
                 dense_score=candidate.dense_score,
-                fulltext_score=item.score,
+                fulltext_score=fulltext_scores[index],
+                sparse_score=sparse_scores[index],
                 fulltext_explanation=(
-                    item.explanation if with_fulltext_explanation else None
+                    explanations[index] if with_fulltext_explanation else None
                 ),
             )
-            for item in query_tokens_results
+            for index, candidate in enumerate(candidate_list)
         ]
-        return results
+        return sorted(
+            results,
+            key=lambda result: (-result.fulltext_score, str(result.point_id)),
+        )
 
     async def search(
         self,
-        query_text: str,
         *,
+        dense_queries: Sequence[str],
+        sparse_queries: Sequence[str],
         dense_limit: int = 50,
         sparse_limit: int = 50,
-        query_filter: Any | None = None,
+        query_filter: models.Filter | None = None,
         with_fulltext_explanation: bool = False,
     ) -> list[ScoredChunk[ChunkT]]:
         """Standard one-DB search: encode, retrieve, union, and rerank."""
-        prepared = await asyncio.to_thread(self.vectorizer.encode, query_text)
+        prepared = await asyncio.to_thread(
+            self.vectorizer.prepare,
+            dense_queries=dense_queries,
+            sparse_queries=sparse_queries,
+        )
         return await self.search_by_vectors(
             prepared,
             dense_limit=dense_limit,

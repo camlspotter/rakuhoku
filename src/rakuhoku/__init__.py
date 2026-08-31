@@ -4,7 +4,9 @@ from .hybrid import (
     ChunkPoint,
     HybridDBConfig,
     HybridQdrantDB,
-    PreparedQuery,
+    PreparedDenseQuery,
+    PreparedSearch,
+    PreparedSparseQuery,
     QueryVectorizer,
     ScoredChunk,
 )
@@ -18,6 +20,7 @@ from .rerank import (
 from .sparse import (
     ALGORITHM_ID,
     DEFAULT_DIMENSIONS,
+    DEFAULT_TF_SATURATION_K1,
     SUPPORTED_DICTIONARY_VERSION,
     SUPPORTED_SUDACHIPY_VERSION,
     SudachiSparseEncoder,
@@ -28,7 +31,6 @@ from .types import (
     SparseExplanation,
     SparseFeature,
     SparseField,
-    SparseVector,
 )
 
 __all__ = [
@@ -36,13 +38,16 @@ __all__ = [
     "ChunkModel",
     "ChunkPoint",
     "DEFAULT_DIMENSIONS",
+    "DEFAULT_TF_SATURATION_K1",
     "DenseField",
     "HybridDBConfig",
     "HybridQdrantDB",
     "SUPPORTED_DICTIONARY_VERSION",
     "SUPPORTED_SUDACHIPY_VERSION",
     "MorphemeExplanation",
-    "PreparedQuery",
+    "PreparedDenseQuery",
+    "PreparedSearch",
+    "PreparedSparseQuery",
     "QueryVectorizer",
     "RerankConfig",
     "RerankedChunk",
@@ -51,7 +56,6 @@ __all__ = [
     "SparseExplanation",
     "SparseFeature",
     "SparseField",
-    "SparseVector",
     "ScoredChunk",
     "SudachiSparseEncoder",
     "SudachiLexicalReranker",

@@ -1,25 +1,26 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
-from .sudachi import Morpheme, SudachiTokenizer
+from qdrant_client import models
+
+from .sudachi import Morpheme, SudachiTokenizer, noun_phrase_spans
 from .types import (
     FeatureKind,
     MorphemeExplanation,
     SparseExplanation,
     SparseFeature,
     SparseField,
-    SparseVector,
 )
 
 
-ALGORITHM_ID = "sudachi-sparse-v1"
+ALGORITHM_ID = "sudachi-sparse-v2"
 DEFAULT_DIMENSIONS = 1 << 32
+DEFAULT_TF_SATURATION_K1 = 1.2
 SUPPORTED_SUDACHIPY_VERSION = "0.6.10"
 SUPPORTED_DICTIONARY_VERSION = "20260116"
 
@@ -104,41 +105,6 @@ class SudachiSparseEncoder:
         digest = hashlib.blake2b(name.encode("utf-8"), digest_size=4).digest()
         return int.from_bytes(digest, "big")
 
-    def _noun_phrases(self, morphemes: list[Morpheme]) -> list[list[Morpheme]]:
-        phrases: list[list[Morpheme]] = []
-        current: list[Morpheme] = []
-        saw_noun = False
-        saw_suffix = False
-
-        def flush() -> None:
-            nonlocal current, saw_noun, saw_suffix
-            if saw_noun:
-                phrases.append(current)
-            current = []
-            saw_noun = False
-            saw_suffix = False
-
-        for morpheme in morphemes:
-            if morpheme.pos == "接頭辞":
-                if saw_noun or saw_suffix:
-                    flush()
-                current.append(morpheme)
-            elif morpheme.pos == "名詞":
-                if saw_suffix:
-                    flush()
-                current.append(morpheme)
-                saw_noun = True
-            elif morpheme.pos == "接尾辞":
-                if saw_noun:
-                    current.append(morpheme)
-                    saw_suffix = True
-                else:
-                    flush()
-            else:
-                flush()
-        flush()
-        return phrases
-
     def _feature(
         self, kind: FeatureKind, text: str, source_text: str, field_weight: float
     ) -> _RawFeature:
@@ -178,7 +144,8 @@ class SudachiSparseEncoder:
                     )
                 )
 
-        for phrase in self._noun_phrases(morphemes):
+        for start, end in noun_phrase_spans(morphemes):
+            phrase = morphemes[start:end]
             source_text = "".join(morpheme.surface for morpheme in phrase)
             phrase_text = self._normalize_phrase(source_text)
             if len(phrase) >= 2:
@@ -197,17 +164,25 @@ class SudachiSparseEncoder:
             return [SparseField(value)]
         return list(value)
 
-    def _vector(self, raw_features: list[_RawFeature]) -> SparseVector:
+    def _vector(self, raw_features: list[_RawFeature]) -> models.SparseVector:
         totals_by_name: defaultdict[str, float] = defaultdict(float)
+        kinds_by_name: dict[str, FeatureKind] = {}
         for feature in raw_features:
             totals_by_name[feature.name] += feature.weight
+            kinds_by_name[feature.name] = feature.kind
 
         index_totals: defaultdict[int, float] = defaultdict(float)
-        for name, weight in totals_by_name.items():
-            index_totals[self.hash_feature(name)] += math.log1p(weight)
+        for name, weighted_tf in totals_by_name.items():
+            feature_weight = self.feature_weights[kinds_by_name[name]]
+            effective_tf = weighted_tf / feature_weight
+            saturated_tf = (
+                effective_tf * (DEFAULT_TF_SATURATION_K1 + 1.0)
+                / (effective_tf + DEFAULT_TF_SATURATION_K1)
+            )
+            index_totals[self.hash_feature(name)] += feature_weight * saturated_tf
 
         sorted_items = sorted(index_totals.items())
-        return SparseVector(
+        return models.SparseVector(
             indices=[index for index, _ in sorted_items],
             values=[weight for _, weight in sorted_items],
         )
@@ -253,21 +228,23 @@ class SudachiSparseEncoder:
             vector=self._vector(raw_features),
         )
 
-    def encode(self, value: str | Iterable[SparseField]) -> SparseVector:
+    def encode(self, value: str | Iterable[SparseField]) -> models.SparseVector:
         raw_features: list[_RawFeature] = []
         for field in self._fields(value):
             field_features, _ = self._extract_field(field)
             raw_features.extend(field_features)
         return self._vector(raw_features)
 
-    def encode_documents(self, texts: list[str]) -> list[SparseVector]:
+    def encode_documents(self, texts: list[str]) -> list[models.SparseVector]:
         return [self.encode(text) for text in texts]
 
-    def encode_queries(self, texts: list[str]) -> list[SparseVector]:
+    def encode_queries(self, texts: list[str]) -> list[models.SparseVector]:
         return [self.encode(text) for text in texts]
 
-    def encode_texts_for_insertion(self, texts: list[str]) -> list[SparseVector]:
+    def encode_texts_for_insertion(
+        self, texts: list[str]
+    ) -> list[models.SparseVector]:
         return self.encode_documents(texts)
 
-    def encode_texts_for_query(self, texts: list[str]) -> list[SparseVector]:
+    def encode_texts_for_query(self, texts: list[str]) -> list[models.SparseVector]:
         return self.encode_queries(texts)

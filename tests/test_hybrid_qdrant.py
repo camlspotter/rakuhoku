@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import SparseVector
 
 from rakuhoku import (
     ChunkModel,
@@ -15,11 +16,10 @@ from rakuhoku import (
     DenseField,
     HybridDBConfig,
     HybridQdrantDB,
-    PreparedQuery,
+    PreparedDenseQuery,
     QueryVectorizer,
     ScoredChunk,
     SparseField,
-    SparseVector,
 )
 
 
@@ -100,11 +100,22 @@ def _components() -> tuple[FakeDenseEncoder, QueryVectorizer, HybridDBConfig]:
 def test_query_vectorizer_prepares_reusable_vectors() -> None:
     dense, vectorizer, _ = _components()
 
-    prepared = vectorizer.encode("利用できない")
+    prepared = vectorizer.prepare(
+        dense_queries=["設備の利用条件", "利用できない設備"],
+        sparse_queries=["利用できない", "設備 利用不可"],
+    )
 
-    assert prepared.text == "利用できない"
-    assert prepared.dense_vector.tolist() == [1.0, 0.0]
-    assert prepared.sparse_vector == SparseVector(indices=[7], values=[1.0])
+    assert [query.vector.tolist() for query in prepared.dense_queries] == [
+        [1.0, 0.0],
+        [1.0, 0.0],
+    ]
+    assert [query.text for query in prepared.sparse_queries] == [
+        "利用できない",
+        "設備 利用不可",
+    ]
+    assert prepared.sparse_queries[0].vector == SparseVector(
+        indices=[7], values=[1.0]
+    )
     assert prepared.dense_model_id == "fake-dense-v1"
     assert prepared.sparse_algorithm_id == "fake-sparse-v1"
     assert dense.query_calls == 1
@@ -135,6 +146,22 @@ def test_scored_chunk_rejects_invalid_fulltext_score(score: float) -> None:
             chunk=TextChunk(title="title", text="text"),
             dense_score=None,
             fulltext_score=score,
+        )
+
+
+@pytest.mark.parametrize(
+    "score",
+    [float("nan"), float("inf"), float("-inf"), -0.001],
+)
+def test_scored_chunk_rejects_invalid_sparse_score(score: float) -> None:
+    with pytest.raises(AssertionError, match="sparse_score"):
+        ScoredChunk(
+            collection_name="chunks",
+            point_id=1,
+            chunk=TextChunk(title="title", text="text"),
+            dense_score=None,
+            fulltext_score=0.5,
+            sparse_score=score,
         )
 
 
@@ -169,24 +196,24 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
                 collection_name="chunks", ids=[2], with_payload=True
             )
             assert stored[0].payload is not None
-            assert stored[0].payload["_rakuhoku"] == {
-                "dense_text": "title: sparse-only\ntext: この設備は利用できない",
-                "sparse_fields": [
-                    {"text": "sparse-only", "weight": 2.0},
-                    {"text": "この設備は利用できない", "weight": 1.0},
-                ],
-                "rerank_text": "この設備は利用できない",
-                "vectorization_schema_id": "text-v1",
+            assert stored[0].payload == {
+                "title": "sparse-only",
+                "text": "この設備は利用できない",
             }
 
             results = await db.search(
-                "利用できない", dense_limit=1, sparse_limit=1
+                dense_queries=["設備"],
+                sparse_queries=["利用できない"],
+                dense_limit=1,
+                sparse_limit=1,
             )
 
             by_id = {result.point_id: result for result in results}
             assert set(by_id) == {1, 2}
             assert by_id[1].dense_score == pytest.approx(1.0)
             assert by_id[2].dense_score is None
+            assert by_id[1].sparse_score is None
+            assert by_id[2].sparse_score is not None
             assert by_id[2].fulltext_score > by_id[1].fulltext_score
             assert by_id[2].chunk == TextChunk(
                 title="sparse-only", text="この設備は利用できない"
@@ -222,12 +249,14 @@ def test_search_by_vectors_reuses_a_prepared_query() -> None:
                     )
                 ]
             )
-            prepared = vectorizer.encode("利用できない")
+            prepared = vectorizer.prepare(
+                dense_queries=["利用できない"],
+                sparse_queries=["利用できない"],
+            )
 
-            first = await db.search_by_vectors(prepared, sparse_limit=0)
+            first = await db.search_by_vectors(prepared)
             second = await db.search_by_vectors(
                 prepared,
-                sparse_limit=0,
                 with_fulltext_explanation=True,
             )
 
@@ -236,6 +265,54 @@ def test_search_by_vectors_reuses_a_prepared_query() -> None:
             assert first[0].fulltext_explanation is None
             assert second[0].fulltext_explanation is not None
             assert dense.query_calls == 1
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_multiple_sparse_queries_retrieve_and_rerank_their_union() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(title="dense-only", text="設備があります"),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(
+                            title="sparse-only", text="利用できない設備です"
+                        ),
+                    ),
+                ]
+            )
+            prepared = vectorizer.prepare(
+                dense_queries=[],
+                sparse_queries=["設備", "利用できない"],
+            )
+
+            results = await db.search_by_vectors(
+                prepared,
+                dense_limit=0,
+                sparse_limit=1,
+                with_fulltext_explanation=True,
+            )
+
+            assert {result.point_id for result in results} == {1, 2}
+            assert all(result.dense_score is None for result in results)
+            assert all(result.sparse_score is not None for result in results)
+            assert all(result.fulltext_score > 0 for result in results)
+            assert all(result.fulltext_explanation is not None for result in results)
         finally:
             await client.close()
 
@@ -283,12 +360,8 @@ def test_open_validates_collection_metadata_and_vector_contract() -> None:
     asyncio.run(run())
 
 
-def test_prepared_query_rejects_a_matrix() -> None:
+def test_prepared_dense_query_rejects_a_matrix() -> None:
     with pytest.raises(ValueError, match="one-dimensional"):
-        PreparedQuery(
-            text="query",
-            dense_vector=np.asarray([[1.0, 0.0]], dtype=np.float32),
-            sparse_vector=SparseVector(indices=[], values=[]),
-            dense_model_id="fake-dense-v1",
-            sparse_algorithm_id="fake-sparse-v1",
+        PreparedDenseQuery(
+            vector=np.asarray([[1.0, 0.0]], dtype=np.float32),
         )

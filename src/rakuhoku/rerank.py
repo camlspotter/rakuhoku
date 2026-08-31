@@ -5,23 +5,23 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
-from .sudachi import Morpheme, SudachiTokenizer
+from .sudachi import Morpheme, SudachiTokenizer, noun_phrase_spans
 
 
 MatchKind = Literal["exact", "synonym", "ngram"]
 
 
-def _assert_fulltext_score(score: float) -> float:
-    assert math.isfinite(score), f"fulltext_score must be finite, got {score!r}"
-    assert 0.0 <= score <= 1.0, f"fulltext_score must be in [0, 1], got {score!r}"
+def _assert_unit_score(score: float) -> float:
+    assert math.isfinite(score), f"score must be finite, got {score!r}"
+    assert 0.0 <= score <= 1.0, f"score must be in [0, 1], got {score!r}"
     return score
 
 
 @dataclass(frozen=True, slots=True)
 class RerankConfig:
-    """Weights and thresholds for the local lexical reranker."""
+    """Sparse fusion weights and thresholds for positional reranking."""
 
-    coverage_weight: float = 0.6
+    sparse_weight: float = 0.6
     order_weight: float = 0.2
     proximity_weight: float = 0.2
     synonym_similarity: float = 0.8
@@ -33,7 +33,7 @@ class RerankConfig:
 
     def __post_init__(self) -> None:
         numeric_values = (
-            self.coverage_weight,
+            self.sparse_weight,
             self.order_weight,
             self.proximity_weight,
             self.synonym_similarity,
@@ -44,8 +44,8 @@ class RerankConfig:
         )
         if any(value < 0 for value in numeric_values):
             raise ValueError("rerank parameters must be non-negative")
-        if self.coverage_weight + self.order_weight + self.proximity_weight <= 0:
-            raise ValueError("at least one score weight must be positive")
+        if self.order_weight + self.proximity_weight <= 0:
+            raise ValueError("at least one positional score weight must be positive")
         if (
             self.synonym_similarity > 1
             or self.ngram_similarity_scale > 1
@@ -69,12 +69,11 @@ class TokenMatch:
 @dataclass(frozen=True, slots=True)
 class RerankExplanation:
     score: float
-    coverage_score: float
     order_score: float
     proximity_score: float
     query_tokens: tuple[str, ...]
     chunk_tokens: tuple[str, ...]
-    coverage_matches: tuple[TokenMatch, ...]
+    available_matches: tuple[TokenMatch, ...]
     ordered_matches: tuple[TokenMatch, ...]
     gap_count: int
     boundary_cost: float
@@ -94,6 +93,7 @@ class _Token:
     normalized: str
     synonym_ids: frozenset[int]
     boundary_before: float
+    is_noun_phrase: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,12 +154,42 @@ class SudachiLexicalReranker:
             return newline_cost + 0.25
         return newline_cost
 
-    def _tokens(self, text: str) -> list[_Token]:
+    def _tokens(
+        self, morphemes: list[Morpheme], *, group_noun_phrases: bool
+    ) -> list[_Token]:
+        phrase_ends = (
+            {
+                start: end
+                for start, end in noun_phrase_spans(morphemes)
+                if end - start >= 2
+            }
+            if group_noun_phrases
+            else {}
+        )
         output: list[_Token] = []
         boundary_before = 0.0
-        for morpheme in self.tokenizer.tokenize(text):
+        index = 0
+        while index < len(morphemes):
+            morpheme = morphemes[index]
             if morpheme.pos in self.excluded_pos:
                 boundary_before += self._boundary_weight(morpheme)
+                index += 1
+                continue
+            phrase_end = phrase_ends.get(index)
+            if phrase_end is not None:
+                phrase = morphemes[index:phrase_end]
+                surface = "".join(item.surface for item in phrase)
+                output.append(
+                    _Token(
+                        surface=surface,
+                        normalized=self._comparison_text(surface),
+                        synonym_ids=frozenset(),
+                        boundary_before=boundary_before,
+                        is_noun_phrase=True,
+                    )
+                )
+                boundary_before = 0.0
+                index = phrase_end
                 continue
             output.append(
                 _Token(
@@ -167,10 +197,28 @@ class SudachiLexicalReranker:
                     normalized=morpheme.normalized,
                     synonym_ids=frozenset(morpheme.synonym_ids),
                     boundary_before=boundary_before,
+                    is_noun_phrase=False,
                 )
             )
             boundary_before = 0.0
+            index += 1
         return output
+
+    def _query_tokens(self, text: str) -> tuple[list[_Token], bool]:
+        morphemes = self.tokenizer.tokenize(text)
+        phrase_count = sum(
+            1
+            for start, end in noun_phrase_spans(morphemes)
+            if end - start >= 2
+        )
+        group_noun_phrases = phrase_count >= 2
+        return (
+            self._tokens(
+                morphemes,
+                group_noun_phrases=group_noun_phrases,
+            ),
+            group_noun_phrases,
+        )
 
     @staticmethod
     def _comparison_text(text: str) -> str:
@@ -198,6 +246,8 @@ class SudachiLexicalReranker:
     def _match(self, query: _Token, chunk: _Token) -> _Match | None:
         if query.normalized == chunk.normalized:
             return _Match("exact", 1.0)
+        if query.is_noun_phrase or chunk.is_noun_phrase:
+            return None
         if query.synonym_ids & chunk.synonym_ids:
             return _Match("synonym", self.config.synonym_similarity)
 
@@ -235,7 +285,7 @@ class SudachiLexicalReranker:
             similarity=match.similarity,
         )
 
-    def _coverage_matches(
+    def _available_matches(
         self,
         query_tokens: list[_Token],
         chunk_tokens: list[_Token],
@@ -370,76 +420,97 @@ class SudachiLexicalReranker:
         if not query_tokens or not chunk_tokens:
             return RerankExplanation(
                 score=0.0,
-                coverage_score=0.0,
                 order_score=0.0,
                 proximity_score=0.0,
                 query_tokens=tuple(token.normalized for token in query_tokens),
                 chunk_tokens=tuple(token.normalized for token in chunk_tokens),
-                coverage_matches=(),
+                available_matches=(),
                 ordered_matches=(),
                 gap_count=0,
                 boundary_cost=0.0,
             )
 
         matches = self._all_matches(query_tokens, chunk_tokens)
-        coverage_matches = self._coverage_matches(
+        available_matches = self._available_matches(
             query_tokens, chunk_tokens, matches
         )
         ordered_matches = self._ordered_matches(query_tokens, chunk_tokens, matches)
-        query_count = len(query_tokens)
-        coverage_score = sum(
-            match.similarity for match in coverage_matches
-        ) / query_count
-        order_score = sum(match.similarity for match in ordered_matches) / query_count
+        available_similarity = sum(
+            match.similarity for match in available_matches
+        )
+        has_complete_positional_evidence = (
+            len(query_tokens) >= 2
+            and len(available_matches) == len(query_tokens)
+            and available_similarity > 0
+        )
+        if not has_complete_positional_evidence:
+            order_score = 0.0
+        else:
+            order_score = (
+                sum(match.similarity for match in ordered_matches)
+                / available_similarity
+            )
         gap_count, boundary_cost = self._alignment_cost(
             ordered_matches, chunk_tokens
         )
-        proximity_factor = 1.0 / (
+        proximity_score = (
             1.0
-            + self.config.gap_penalty * gap_count
-            + self.config.boundary_penalty * boundary_cost
+            / (
+                1.0
+                + self.config.gap_penalty * gap_count
+                + self.config.boundary_penalty * boundary_cost
+            )
+            if (
+                has_complete_positional_evidence
+                and len(ordered_matches) == len(query_tokens)
+            )
+            else 0.0
         )
-        proximity_score = order_score * proximity_factor
-        weight_total = (
-            self.config.coverage_weight
-            + self.config.order_weight
-            + self.config.proximity_weight
-        )
-        score = _assert_fulltext_score(
+        weight_total = self.config.order_weight + self.config.proximity_weight
+        score = _assert_unit_score(
             (
-                self.config.coverage_weight * coverage_score
-                + self.config.order_weight * order_score
+                self.config.order_weight * order_score
                 + self.config.proximity_weight * proximity_score
             )
             / weight_total
         )
         return RerankExplanation(
             score=score,
-            coverage_score=coverage_score,
             order_score=order_score,
             proximity_score=proximity_score,
             query_tokens=tuple(token.normalized for token in query_tokens),
             chunk_tokens=tuple(token.normalized for token in chunk_tokens),
-            coverage_matches=coverage_matches,
+            available_matches=available_matches,
             ordered_matches=ordered_matches,
             gap_count=gap_count,
             boundary_cost=boundary_cost,
         )
 
     def explain(self, query: str, chunk: str) -> RerankExplanation:
-        return self._explain_tokens(self._tokens(query), self._tokens(chunk))
+        query_tokens, group_noun_phrases = self._query_tokens(query)
+        return self._explain_tokens(
+            query_tokens,
+            self._tokens(
+                self.tokenizer.tokenize(chunk),
+                group_noun_phrases=group_noun_phrases,
+            ),
+        )
 
     def score(self, query: str, chunk: str) -> float:
         return self.explain(query, chunk).score
 
     def rerank(self, query: str, chunks: Sequence[str]) -> list[RerankedChunk]:
-        query_tokens = self._tokens(query)
+        query_tokens, group_noun_phrases = self._query_tokens(query)
         results = [
             RerankedChunk(
                 original_index=index,
                 text=chunk,
                 score=(explanation := self._explain_tokens(
-                    query_tokens, self._tokens(chunk)
+                    query_tokens,
+                    self._tokens(
+                        self.tokenizer.tokenize(chunk),
+                        group_noun_phrases=group_noun_phrases,
+                    ),
                 )).score,
                 explanation=explanation,
             )

@@ -55,3 +55,42 @@ class SudachiTokenizer:
                 )
             )
         return output
+
+
+def noun_phrase_spans(morphemes: list[Morpheme]) -> list[tuple[int, int]]:
+    """Return half-open spans for prefix/noun/suffix noun phrases."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    saw_noun = False
+    saw_suffix = False
+
+    def flush(end: int) -> None:
+        nonlocal start, saw_noun, saw_suffix
+        if saw_noun:
+            spans.append((start, end))
+        start = end
+        saw_noun = False
+        saw_suffix = False
+
+    for index, morpheme in enumerate(morphemes):
+        if morpheme.pos == "接頭辞":
+            if saw_noun or saw_suffix:
+                flush(index)
+            if not saw_noun and not saw_suffix:
+                start = index
+        elif morpheme.pos == "名詞":
+            if saw_suffix:
+                flush(index)
+            if not saw_noun:
+                start = min(start, index)
+            saw_noun = True
+        elif morpheme.pos == "接尾辞":
+            if saw_noun:
+                saw_suffix = True
+            else:
+                flush(index + 1)
+        else:
+            flush(index)
+            start = index + 1
+    flush(len(morphemes))
+    return spans

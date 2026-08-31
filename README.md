@@ -97,25 +97,37 @@ db = await HybridQdrantDB.open(
     vectorizer=vectorizer,
     reranker=SudachiLexicalReranker(),
 )
-results = await db.search("利用できない", dense_limit=50, sparse_limit=50)
+results = await db.search(
+    dense_queries=["利用条件", "利用できない設備"],
+    sparse_queries=["利用できない", "設備 利用不可"],
+    dense_limit=50,
+    sparse_limit=50,
+)
 
 for result in results:
-    print(result.chunk, result.dense_score, result.fulltext_score)
+    print(
+        result.chunk,
+        result.dense_score,
+        result.sparse_score,
+        result.fulltext_score,
+    )
 ```
 
-`fulltext_explanation`は通常`None`である。coverage、順序、距離などの内訳が必要な
+`sparse_score`はQdrantが返した生Sparse scoreである。`fulltext_explanation`は通常
+`None`であり、順序と距離の内訳が必要な
 場合だけ、`with_fulltext_explanation=True`を指定する。
 
 ```python
 results = await db.search(
-    "利用できない",
+    dense_queries=["利用条件", "利用できない設備"],
+    sparse_queries=["利用できない", "設備 利用不可"],
     with_fulltext_explanation=True,
 )
 ```
 
-sparse検索のQdrant scoreは候補取得にだけ使い、結果には残さない。dense由来、sparse由来の
-全候補に同じ全文検索rerankerを適用する。複数DBでquery vectorを再利用する場合は、
-`QueryVectorizer.encode()`で一度だけ`PreparedQuery`を作り、各DBの
+sparse検索のQdrant scoreを基本関連度として保持し、query内の順序と距離をローカルrerankerで
+加える。複数DBでquery vectorを再利用する場合は、
+`QueryVectorizer.prepare()`で一度だけ`PreparedSearch`を作り、各DBの
 `search_by_vectors()`へ渡す。作成・登録を含む完全なAPIは
 [Qdrant統合API](docs/qdrant.md)を参照する。
 
@@ -137,9 +149,10 @@ for result in results:
     print(result.original_index, result.score, result.text)
 ```
 
-候補の実際のchunk文字列に対して、query tokenのcoverage、順序、距離、句読点・改行境界を
-評価する。正規形で一致しないtokenは、Sudachi synonym、文字n-gramの順に弱い一致として
-扱う。詳細は[ローカルreranker仕様](docs/reranking.md)を参照する。
+候補の実際のchunk文字列に対して、query tokenまたは名詞句の順序、距離、句読点・改行境界を
+評価する。coverageは再計算せず、生Sparse scoreを使用する。正規形で一致しないtokenは、
+Sudachi synonym、文字n-gramの順に弱い一致として扱う。詳細は
+[ローカルreranker仕様](docs/reranking.md)を参照する。
 
 ## Chunkモデル
 

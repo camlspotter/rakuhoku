@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import math
 from collections.abc import Iterable
 
 import pytest
 
-from rakuhoku.sparse import SudachiSparseEncoder
+from rakuhoku.sparse import DEFAULT_TF_SATURATION_K1, SudachiSparseEncoder
 from rakuhoku.sudachi import Morpheme
 from rakuhoku.types import SparseExplanation, SparseField
 
@@ -29,6 +28,12 @@ def morph(
 
 def names(encoder: SudachiSparseEncoder, text: str) -> set[str]:
     return {feature.name for feature in encoder.explain(text).features}
+
+
+def saturated_tf(tf: float) -> float:
+    return tf * (DEFAULT_TF_SATURATION_K1 + 1.0) / (
+        tf + DEFAULT_TF_SATURATION_K1
+    )
 
 
 def test_empty_excluded_pos_and_deictic_pronoun_is_retained() -> None:
@@ -144,11 +149,39 @@ def test_repeated_grams_are_counted_by_position() -> None:
     assert feature_names.count("char_3gram:aaa") == 2
     values = dict(zip(explanation.vector.indices, explanation.vector.values))
     assert values[encoder.hash_feature("char_2gram:aa")] == pytest.approx(
-        math.log1p(0.15)
+        0.05 * saturated_tf(3.0)
     )
     assert values[encoder.hash_feature("char_3gram:aaa")] == pytest.approx(
-        math.log1p(0.30)
+        0.15 * saturated_tf(2.0)
     )
+
+
+def test_term_frequency_saturates_with_a_finite_limit() -> None:
+    tokenizer = FakeTokenizer(
+        {
+            "once": [morph("情報")],
+            "twice": [morph("情報"), morph("情報")],
+            "ten": [morph("情報") for _ in range(10)],
+            "thirty-eight": [morph("情報") for _ in range(38)],
+        }
+    )
+    encoder = SudachiSparseEncoder(tokenizer=tokenizer)  # type: ignore[arg-type]
+    index = encoder.hash_feature("token:情報")
+
+    values = {
+        text: dict(zip(vector.indices, vector.values))[index]
+        for text in ("once", "twice", "ten", "thirty-eight")
+        for vector in [encoder.encode(text)]
+    }
+    assert values == pytest.approx(
+        {
+            "once": 1.0,
+            "twice": 1.375,
+            "ten": 1.9642857142857144,
+            "thirty-eight": 2.13265306122449,
+        }
+    )
+    assert values["thirty-eight"] < DEFAULT_TF_SATURATION_K1 + 1.0
 
 
 def test_namespaces_do_not_collapse_same_text() -> None:
@@ -184,7 +217,7 @@ def test_hash_collisions_are_added_and_indices_sorted() -> None:
     vector = encoder.encode("text")
     assert vector.indices == [0]
     assert vector.values == pytest.approx(
-        [math.log1p(1.0) + math.log1p(1.0) + math.log1p(0.05)]
+        [saturated_tf(1.0) + saturated_tf(1.0) + 0.05 * saturated_tf(1.0)]
     )
 
 
@@ -213,7 +246,7 @@ def test_fields_create_boundaries_and_apply_weights() -> None:
         [SparseField("a", weight=2), SparseField("b", weight=0)]
     )
     assert {feature.name for feature in explanation.features} == {"token:a"}
-    assert explanation.vector.values == pytest.approx([math.log1p(2)])
+    assert explanation.vector.values == pytest.approx([saturated_tf(2.0)])
 
 
 def test_explain_includes_morpheme_details_and_field_index() -> None:

@@ -58,8 +58,9 @@ sparse入力に使う値を`SparseField(text, weight)`として返す。`SparseF
 ### `rerank_text()`
 
 ローカルrerankerがqueryと比較する実際のchunk文字列を返す。これは`sparse_fields()`の
-単純な連結からは導出しない。タイトルなどをsparse検索に利用しながら、rerankingでは
-本文だけを比較するユースケースがあるためである。
+単純な連結とは限らない。フィールド間の順序と距離を評価したい場合は、アプリケーション側で
+`"\n\n"`などの明示的な境界を挟んで`sparse_fields()`を連結できる。タイトルなどをsparse検索に
+利用しながら、rerankingでは本文だけを比較するユースケースでは別の文字列を返してよい。
 
 ## Vectorization schema ID
 

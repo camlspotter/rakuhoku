@@ -41,7 +41,6 @@ def test_sentence_and_newline_boundaries_are_soft_penalties() -> None:
     contiguous = reranker.explain(query, "利用できない")
     divided = reranker.explain(query, "利用。\nできない")
     assert 0 < divided.score < contiguous.score
-    assert divided.coverage_score == pytest.approx(1.0)
     assert divided.order_score == pytest.approx(1.0)
     assert divided.boundary_cost > 0
 
@@ -61,13 +60,15 @@ def test_particles_and_auxiliary_verbs_are_kept() -> None:
     assert explanation.score == pytest.approx(1.0)
 
 
-def test_synonym_match_is_weaker_than_exact_match() -> None:
+def test_single_synonym_match_is_explained_but_has_no_positional_score() -> None:
     reranker = SudachiLexicalReranker()
     exact = reranker.explain("ラボ", "ラボ")
     synonym = reranker.explain("ラボ", "研究所")
-    assert exact.score == pytest.approx(1.0)
-    assert synonym.score == pytest.approx(0.8)
-    assert synonym.coverage_matches[0].kind == "synonym"
+    assert exact.score == 0.0
+    assert synonym.score == 0.0
+    assert exact.available_matches[0].similarity == pytest.approx(1.0)
+    assert synonym.available_matches[0].kind == "synonym"
+    assert synonym.available_matches[0].similarity == pytest.approx(0.8)
 
 
 def test_synonym_match_participates_in_order_and_proximity() -> None:
@@ -81,8 +82,9 @@ def test_synonym_match_participates_in_order_and_proximity() -> None:
 def test_character_ngram_match_recovers_one_character_error() -> None:
     reranker = SudachiLexicalReranker()
     explanation = reranker.explain("システム", "シスデム")
-    assert 0 < explanation.score < reranker.score("システム", "システム")
-    assert explanation.coverage_matches[0].kind == "ngram"
+    assert explanation.score == 0.0
+    assert explanation.available_matches[0].kind == "ngram"
+    assert 0 < explanation.available_matches[0].similarity < 1.0
 
 
 def test_short_tokens_do_not_use_character_similarity() -> None:
@@ -93,7 +95,7 @@ def test_short_tokens_do_not_use_character_similarity() -> None:
     assert reranker.score("query", "chunk") == 0
 
 
-def test_one_chunk_token_cannot_cover_repeated_query_tokens_twice() -> None:
+def test_one_chunk_token_cannot_match_repeated_query_tokens_twice() -> None:
     tokenizer = FakeTokenizer(
         {
             "query": [morph("情報"), morph("情報")],
@@ -102,7 +104,48 @@ def test_one_chunk_token_cannot_cover_repeated_query_tokens_twice() -> None:
     )
     reranker = SudachiLexicalReranker(tokenizer=tokenizer)  # type: ignore[arg-type]
     explanation = reranker.explain("query", "chunk")
-    assert explanation.coverage_score == pytest.approx(0.5)
+    assert len(explanation.available_matches) == 1
+    assert explanation.score == 0.0
+
+
+def test_multiple_noun_phrases_are_non_overlapping_position_anchors() -> None:
+    explanation = SudachiLexicalReranker().explain(
+        "情報・システム研究機構組織運営規則 第３条",
+        "情報・システム研究機構組織運営規則\n\n第３条",
+    )
+
+    assert explanation.query_tokens == (
+        "情報",
+        "システム研究機構組織運営規則",
+        "第3条",
+    )
+    assert explanation.order_score == pytest.approx(1.0)
+    assert explanation.proximity_score < 1.0
+
+
+def test_noun_phrase_requires_exact_match_for_positional_evidence() -> None:
+    explanation = SudachiLexicalReranker().explain(
+        "情報・システム研究機構組織運営規則 第３条",
+        "情報・システム研究機構組織運営規則\n\n第１５条",
+    )
+
+    assert [match.query_token for match in explanation.available_matches] == [
+        "情報",
+        "システム研究機構組織運営規則",
+    ]
+    assert explanation.order_score == 0.0
+    assert explanation.proximity_score == 0.0
+
+
+def test_reversed_complete_evidence_has_no_proximity_score() -> None:
+    explanation = SudachiLexicalReranker().explain(
+        "情報・システム研究機構組織運営規則 第３条",
+        "第３条\n\n情報・システム研究機構組織運営規則",
+    )
+
+    assert len(explanation.available_matches) == 3
+    assert explanation.order_score < 1.0
+    assert explanation.proximity_score == 0.0
 
 
 def test_order_alignment_prefers_the_closest_equal_quality_occurrence() -> None:
@@ -141,4 +184,4 @@ def test_rerank_returns_stable_original_indices_and_explanations() -> None:
 
 def test_config_rejects_invalid_values() -> None:
     with pytest.raises(ValueError):
-        RerankConfig(coverage_weight=-1)
+        RerankConfig(sparse_weight=-1)

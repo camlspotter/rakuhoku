@@ -47,7 +47,7 @@ def main() -> None:
         "dimensions": encoder.dimensions,
         "cases": cases,
     }
-    path = Path(__file__).parent / "golden" / "sudachi_sparse_v1.json"
+    path = Path(__file__).parent / "golden" / "sudachi_sparse_v2.json"
     path.write_text(
         json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

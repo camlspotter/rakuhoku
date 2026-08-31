@@ -3,17 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
-@dataclass(frozen=True, slots=True)
-class SparseVector:
-    """Qdrant-independent sparse vector representation."""
-
-    indices: list[int]
-    values: list[float]
-
-    def __post_init__(self) -> None:
-        if len(self.indices) != len(self.values):
-            raise ValueError("indices and values must have the same length")
+from qdrant_client import models
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,4 +64,4 @@ class SparseExplanation:
     dictionary_version: str
     morphemes: list[MorphemeExplanation]
     features: list[SparseFeature]
-    vector: SparseVector
+    vector: models.SparseVector

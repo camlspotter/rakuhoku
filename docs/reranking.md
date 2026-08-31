@@ -3,7 +3,8 @@
 ## 1. 目的
 
 `SudachiLexicalReranker`は、sparse検索で取得した候補の実際のchunk文字列とqueryを比較し、
-候補内の順位を付け直す。sparse vectorの生成規則や`sudachi-sparse-v1`のalgorithm IDには
+query内の語・名詞句の順序と距離を測る。coverageは再計算せず、Qdrantが返した生Sparse
+scoreを基本関連度として使用する。sparse vectorの生成規則やsparse algorithm IDには
 影響しない。
 
 rerankerは取得済み候補だけを並べ替える。候補集合に入らなかった文書は復活できないため、
@@ -21,7 +22,8 @@ explanation = reranker.explain(query, chunk)
 results = reranker.rerank(query, chunks)
 ```
 
-- `score()`は`0.0`から`1.0`の比較用scoreを返す。確率ではない。
+- `score()`はorderとproximityだけを合成した`0.0`から`1.0`の位置scoreを返す。
+  単一の一致だけでは順序・距離を測れないため`0.0`になる。
 - `explain()`はscore内訳、token対応、gap数、境界costを返す。
 - `rerank()`はscore降順、同点時は元の候補順で返す。各結果に`original_index`を保持する。
 
@@ -38,6 +40,11 @@ tokenizeする。
 -> 利用 / 為る / て / は / 成る / ない
 ```
 
+Sparse encoderと同じprefix/noun/suffix規則で名詞句spanも抽出する。queryに複数の複合名詞句が
+ある場合は、それぞれを構成tokenと重複しない位置anchorとして扱う。複合名詞句が一つ以下の
+queryでは、通常の形態素token列へfallbackする。名詞句anchorは正規化後の完全一致だけを
+認め、synonym一致や文字n-gram一致によって別の条番号などを位置一致にしない。
+
 ## 4. token一致
 
 同じquery tokenとchunk tokenについて、最初に成立した方式を採用する。
@@ -53,22 +60,24 @@ NFKCとcase folding後の1/2/3-gram集合についてDice係数を計算する�
 係数が`0.4`以上の場合だけ一致とする。短い語の曖昧な部分一致を避けながら、一文字程度の
 OCR誤りや書き損じを弱い一致として拾うためである。
 
-## 5. score
+## 5. 位置score
 
-scoreは次の三要素から作る。
+位置scoreは次の二要素から作る。
 
 | 要素 | 内容 | weight |
 |---|---|---:|
-| coverage | query tokenのうちchunk内のtokenで説明できた割合 | `0.6` |
-| order | queryと同じ順序で対応できたtokenの割合 | `0.2` |
-| proximity | order scoreへ距離と境界の減点を適用 | `0.2` |
+| order | 一致済みanchorのうちqueryと同じ順序で対応できた割合 | `0.2` |
+| proximity | 順序を保ったanchor間の距離と境界 | `0.2` |
 
 ```text
-score = 0.6 × coverage + 0.2 × order + 0.2 × proximity
+position_score =
+    (0.2 × order + 0.2 × proximity) / (0.2 + 0.2)
 ```
 
-chunk長では正規化しない。長いchunkそのものを不利にせず、queryをどれだけ説明できるかを
-主軸にする。
+位置を無視した一対一の最良一致を比較対象とし、orderはその一致similarityのうち、query順を
+守って採用できた割合である。query全体のtoken数では割らないため、Sparseで測定済みの
+coverageを重複して評価しない。全query anchorの位置が得られない場合、位置関係は未評価として
+orderとproximityを`0.0`にする。
 
 同じchunk tokenを複数のquery tokenへ重複使用しない。orderはtokenの最大重み付き共通部分列で
 計算するため、順序逆転があると低下する。
@@ -85,7 +94,8 @@ chunk長では正規化しない。長いchunkそのものを不利にせず、q
 順序が逆転             order scoreが低下
 ```
 
-proximityは次の係数をorder scoreへ掛ける。
+全anchorをquery順に対応できた場合だけ、proximityを次の係数で計算する。順序が逆転して
+全anchorを並べられない場合は`0.0`とする。
 
 ```text
 1 / (1 + 0.1 × gap数 + 0.5 × boundary cost)
@@ -94,7 +104,21 @@ proximityは次の係数をorder scoreへ掛ける。
 句点や改行を絶対的な境界にしないため、OCRや書き損じによる不自然な分断があっても一致を
 残せる。
 
-## 7. 制限
+## 7. 生Sparse scoreとの合成
+
+`HybridQdrantDB`は各sparse queryの取得結果内で生Sparse scoreを最大値により正規化し、
+次の既定weightで位置scoreと合成する。
+
+```text
+fulltext_score =
+    0.6 × normalized_sparse + 0.2 × order + 0.2 × proximity
+```
+
+`ScoredChunk.sparse_score`には、採用されたqueryについてQdrantが返した正規化前のscoreを保持する。
+dense検索だけで候補になり、sparse検索結果に含まれなかった候補の`fulltext_score`は`0.0`、
+`sparse_score`は`None`である。
+
+## 8. 制限
 
 このrerankerは字句的な順序と近接性を評価する。係り受けや否定スコープを完全には解析しない。
 たとえば離れた位置にある`利用`、`出来る`、`ない`は減点できるが、すべての文法的な否定関係を
