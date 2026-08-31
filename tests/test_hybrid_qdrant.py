@@ -134,6 +134,18 @@ def test_scored_chunk_accepts_finite_unit_fulltext_score(score: float) -> None:
     assert result.fulltext_score == score
 
 
+def test_scored_chunk_accepts_missing_fulltext_score() -> None:
+    result = ScoredChunk(
+        collection_name="chunks",
+        point_id=1,
+        chunk=TextChunk(title="title", text="text"),
+        dense_score=0.5,
+        fulltext_score=None,
+    )
+
+    assert result.fulltext_score is None
+
+
 @pytest.mark.parametrize(
     "score",
     [float("nan"), float("inf"), float("-inf"), -0.001, 1.001],
@@ -214,7 +226,9 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
             assert by_id[2].dense_score is None
             assert by_id[1].sparse_score is None
             assert by_id[2].sparse_score is not None
-            assert by_id[2].fulltext_score > by_id[1].fulltext_score
+            assert by_id[1].fulltext_score is None
+            assert by_id[2].fulltext_score is not None
+            assert by_id[2].fulltext_score > 0
             assert by_id[2].chunk == TextChunk(
                 title="sparse-only", text="この設備は利用できない"
             )
@@ -271,6 +285,50 @@ def test_search_by_vectors_reuses_a_prepared_query() -> None:
     asyncio.run(run())
 
 
+def test_dense_only_search_has_no_fulltext_score_and_uses_dense_order() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(title="other", text="設備があります"),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(title="dense-only", text="設備があります"),
+                    ),
+                ]
+            )
+            prepared = vectorizer.prepare(
+                dense_queries=["設備"],
+                sparse_queries=[],
+            )
+
+            results = await db.search_by_vectors(
+                prepared,
+                dense_limit=2,
+                sparse_limit=0,
+            )
+
+            assert [result.point_id for result in results] == [2, 1]
+            assert all(result.dense_score is not None for result in results)
+            assert all(result.sparse_score is None for result in results)
+            assert all(result.fulltext_score is None for result in results)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_multiple_sparse_queries_retrieve_and_rerank_their_union() -> None:
     async def run() -> None:
         client = AsyncQdrantClient(":memory:")
@@ -311,7 +369,11 @@ def test_multiple_sparse_queries_retrieve_and_rerank_their_union() -> None:
             assert {result.point_id for result in results} == {1, 2}
             assert all(result.dense_score is None for result in results)
             assert all(result.sparse_score is not None for result in results)
-            assert all(result.fulltext_score > 0 for result in results)
+            assert all(
+                result.fulltext_score is not None
+                and result.fulltext_score > 0
+                for result in results
+            )
             assert all(result.fulltext_explanation is not None for result in results)
         finally:
             await client.close()

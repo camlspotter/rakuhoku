@@ -3,8 +3,8 @@
 `rakuhoku`は、再現可能な密ベクトルと日本語の疎ベクトルを生成するための
 小さなPythonパッケージである。dense・sparse vector生成に加え、単一Qdrant
 collectionへの登録と標準検索APIを提供する。標準検索はdense・sparse候補をpoint IDで
-統合し、保存済みchunk文字列から全文検索scoreを付ける。dense scoreと全文検索scoreの
-最終的な合成はアプリケーションが決める。
+統合し、保存済みchunk文字列から全文検索scoreを付ける。最終的な合成方針は
+アプリケーションが決め、rakuhokuの`rrf_fuse()`でweighted RRFを適用できる。
 
 > [!IMPORTANT]
 > 2026-08-18に`SudachiSparseEncoder`の仕様選択とローカル実装への反映を完了した。
@@ -73,6 +73,7 @@ from rakuhoku import (
     HybridQdrantDB,
     QueryVectorizer,
     SudachiLexicalReranker,
+    rrf_fuse,
 )
 
 client = AsyncQdrantClient(url="http://localhost:6333")
@@ -111,11 +112,21 @@ for result in results:
         result.sparse_score,
         result.fulltext_score,
     )
+
+fused = rrf_fuse(
+    results,
+    k=5.0,
+    dense_weight=0.5,
+    fulltext_weight=0.5,
+    limit=20,
+)
 ```
 
 `sparse_score`はQdrantが返した生Sparse scoreである。`fulltext_explanation`は通常
 `None`であり、順序と距離の内訳が必要な
 場合だけ、`with_fulltext_explanation=True`を指定する。
+`rrf_fuse()`は`dense_score`と`fulltext_score`からそれぞれ順位を作り、候補、RRF score、
+両順位を持つ`list[FusedChunk]`を返す。`None`のscoreは対応する順位に参加しない。
 
 ```python
 results = await db.search(

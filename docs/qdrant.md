@@ -23,13 +23,39 @@ closeは呼び出し側が管理する。
 | `chunk` | 指定した`ChunkModel`型へ復元したpayload |
 | `dense_score` | dense候補ならQdrant cosine score、sparseのみなら`None` |
 | `sparse_score` | 採用されたsparse queryについてQdrantが返した生score |
-| `fulltext_score` | 正規化Sparse、順序、距離を合成した0〜1の比較値 |
+| `fulltext_score` | Sparse候補なら正規化Sparse、順序、距離を合成した0〜1の比較値。未評価なら`None` |
 | `fulltext_explanation` | 通常は`None`。指定時のみ順序、距離などの内訳 |
 
 各sparse queryの生scoreは、そのqueryの取得結果内の最大値で割って0〜1へ正規化する。
 既定の`fulltext_score`は、正規化Sparseを`0.6`、順序を`0.2`、距離を`0.2`で合成する。
 複数sparse queryで同じ候補を取得した場合は、合成scoreが最大になるqueryの生Sparse scoreと
 説明を返す。異なるDBの結果を統合・重複排除する処理はクライアント側の責務である。
+
+Sparse queryが空の場合、または候補がどのSparse検索結果にも含まれない場合は、
+`sparse_score`と`fulltext_score`を`None`にする。Dense-only検索では`dense_score`降順で返す。
+
+## RRFによる最終順位
+
+`rrf_fuse()`は`Sequence[ScoredChunk]`からDense順位と全文順位を作り、weighted RRFで
+統合する。`k`とweightは検索アプリケーションの方針なので必須引数であり、rakuhokuは
+既定値を持たない。
+
+```python
+from rakuhoku import rrf_fuse
+
+fused = rrf_fuse(
+    results,
+    k=5.0,
+    dense_weight=0.5,
+    fulltext_weight=0.5,
+    limit=20,
+)
+```
+
+返り値は`list[FusedChunk]`で、各要素に元の`ScoredChunk`である`candidate`、RRFの
+`score`、1始まりの`dense_rank`と`fulltext_rank`を持つ。未評価のscoreは対応する順位へ
+参加せず、順位は`None`になる。一方の検索だけを使った場合も、返す`score`は常に
+RRF scoreである。候補の同一性は`collection_name`と`point_id`の組で判定する。
 
 説明が必要な場合は明示的に指定する。この引数は`search()`と
 `search_by_vectors()`の両方で使用できる。

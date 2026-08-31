@@ -10,6 +10,7 @@ from .hybrid import (
     QueryVectorizer,
     ScoredChunk,
 )
+from .fusion import FusedChunk, rrf_fuse
 from .rerank import (
     RerankConfig,
     RerankedChunk,
@@ -40,6 +41,7 @@ __all__ = [
     "DEFAULT_DIMENSIONS",
     "DEFAULT_TF_SATURATION_K1",
     "DenseField",
+    "FusedChunk",
     "HybridDBConfig",
     "HybridQdrantDB",
     "SUPPORTED_DICTIONARY_VERSION",
@@ -61,4 +63,5 @@ __all__ = [
     "SudachiLexicalReranker",
     "TokenMatch",
     "render_dense_fields",
+    "rrf_fuse",
 ]

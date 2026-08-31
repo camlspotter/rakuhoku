@@ -115,8 +115,8 @@ fulltext_score =
 ```
 
 `ScoredChunk.sparse_score`には、採用されたqueryについてQdrantが返した正規化前のscoreを保持する。
-dense検索だけで候補になり、sparse検索結果に含まれなかった候補の`fulltext_score`は`0.0`、
-`sparse_score`は`None`である。
+dense検索だけで候補になり、sparse検索結果に含まれなかった候補の`fulltext_score`と
+`sparse_score`はともに`None`である。評価結果の`0.0`と未評価の`None`を区別する。
 
 ## 8. 制限
 

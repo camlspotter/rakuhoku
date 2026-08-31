@@ -167,17 +167,18 @@ class ScoredChunk(Generic[ChunkT]):
     point_id: PointId
     chunk: ChunkT
     dense_score: float | None
-    fulltext_score: float
+    fulltext_score: float | None
     sparse_score: float | None = None
     fulltext_explanation: RerankExplanation | None = None
 
     def __post_init__(self) -> None:
-        assert math.isfinite(self.fulltext_score), (
-            f"fulltext_score must be finite, got {self.fulltext_score!r}"
-        )
-        assert 0.0 <= self.fulltext_score <= 1.0, (
-            f"fulltext_score must be in [0, 1], got {self.fulltext_score!r}"
-        )
+        if self.fulltext_score is not None:
+            assert math.isfinite(self.fulltext_score), (
+                f"fulltext_score must be finite, got {self.fulltext_score!r}"
+            )
+            assert 0.0 <= self.fulltext_score <= 1.0, (
+                f"fulltext_score must be in [0, 1], got {self.fulltext_score!r}"
+            )
         if self.sparse_score is not None:
             assert math.isfinite(self.sparse_score), (
                 f"sparse_score must be finite, got {self.sparse_score!r}"
@@ -536,7 +537,7 @@ class HybridQdrantDB(Generic[ChunkT]):
                 for query in search.sparse_queries
             ]
         )
-        fulltext_scores = [0.0 for _ in candidate_list]
+        fulltext_scores: list[float | None] = [None for _ in candidate_list]
         sparse_scores: list[float | None] = [None for _ in candidate_list]
         explanations: list[RerankExplanation | None] = [
             None for _ in candidate_list
@@ -569,10 +570,8 @@ class HybridQdrantDB(Generic[ChunkT]):
                     + config.proximity_weight
                     * item.explanation.proximity_score
                 ) / score_weight_total
-                if (
-                    explanations[item.original_index] is None
-                    or fulltext_score > fulltext_scores[item.original_index]
-                ):
+                previous_score = fulltext_scores[item.original_index]
+                if previous_score is None or fulltext_score > previous_score:
                     fulltext_scores[item.original_index] = fulltext_score
                     sparse_scores[item.original_index] = sparse_score
                     explanations[item.original_index] = item.explanation
@@ -591,10 +590,16 @@ class HybridQdrantDB(Generic[ChunkT]):
             )
             for index, candidate in enumerate(candidate_list)
         ]
-        return sorted(
-            results,
-            key=lambda result: (-result.fulltext_score, str(result.point_id)),
-        )
+        def result_sort_key(
+            result: ScoredChunk[ChunkT],
+        ) -> tuple[int, float, str]:
+            if result.fulltext_score is not None:
+                return (0, -result.fulltext_score, str(result.point_id))
+            dense_score = result.dense_score
+            assert dense_score is not None
+            return (1, -dense_score, str(result.point_id))
+
+        return sorted(results, key=result_sort_key)
 
     async def search(
         self,
