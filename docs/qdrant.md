@@ -11,8 +11,9 @@ closeは呼び出し側が管理する。
 1. 複数のdense queryとsparse queryをvector化する。
 2. 全dense検索と全sparse検索を並行して実行する。
 3. 同一collection内の結果をQdrant point IDで統合する。
-4. 各sparse queryの生scoreを基本関連度とし、queryの順序・距離scoreを加える。
-5. 全文検索scoreの降順で`list[ScoredChunk]`を返す。
+4. 各sparse queryについて、統合候補の未知Sparse scoreだけをQdrantで追加評価する。
+5. 生Sparse scoreを基本関連度とし、queryの順序・距離scoreを加える。
+6. 全文検索scoreの降順で`list[ScoredChunk]`を返す。
 
 `ScoredChunk`の主要フィールドは次のとおりである。
 
@@ -22,17 +23,21 @@ closeは呼び出し側が管理する。
 | `point_id` | Qdrant point ID |
 | `chunk` | 指定した`ChunkModel`型へ復元したpayload |
 | `dense_score` | dense候補ならQdrant cosine score、sparseのみなら`None` |
-| `sparse_score` | 採用されたsparse queryについてQdrantが返した生score |
-| `fulltext_score` | Sparse候補なら正規化Sparse、順序、距離を合成した0〜1の比較値。未評価なら`None` |
+| `sparse_score` | 採用されたsparse queryについてQdrantが計算した生score。非一致なら`0.0` |
+| `fulltext_score` | Sparse queryがあれば正規化Sparse、順序、距離を合成した0〜1の比較値。Sparse queryがなければ`None` |
 | `fulltext_explanation` | 通常は`None`。指定時のみ順序、距離などの内訳 |
 
-各sparse queryの生scoreは、そのqueryの取得結果内の最大値で割って0〜1へ正規化する。
+各sparse queryについて、denseとsparseの統合候補をすべて評価する。最初のsparse検索結果に
+含まれず生scoreが未知のpointだけを、point IDで候補を限定してQdrantへ追加照会する。
+追加照会が正常終了しても返らないpointはSparse vectorが非一致なので生scoreを`0.0`とする。
+生scoreは、そのqueryに対する統合候補内の最大値で割って0〜1へ正規化する。
 既定の`fulltext_score`は、正規化Sparseを`0.6`、順序を`0.2`、距離を`0.2`で合成する。
-複数sparse queryで同じ候補を取得した場合は、合成scoreが最大になるqueryの生Sparse scoreと
-説明を返す。異なるDBの結果を統合・重複排除する処理はクライアント側の責務である。
+複数sparse queryがある場合は、各queryで全候補の合成scoreを計算し、最大になるqueryの
+生Sparse scoreと説明を返す。異なるDBの結果を統合・重複排除する処理はクライアント側の
+責務である。
 
-Sparse queryが空の場合、または候補がどのSparse検索結果にも含まれない場合は、
-`sparse_score`と`fulltext_score`を`None`にする。Dense-only検索では`dense_score`降順で返す。
+Sparse queryが空の場合だけ`sparse_score`と`fulltext_score`を`None`にする。
+Dense-only検索では`dense_score`降順で返す。
 
 ## RRFによる最終順位
 

@@ -499,7 +499,11 @@ class HybridQdrantDB(Generic[ChunkT]):
         )
         result_sets = await asyncio.gather(*(dense_calls + sparse_calls))
         dense_result_sets = result_sets[: len(dense_calls)]
-        sparse_result_sets = result_sets[len(dense_calls) :]
+        sparse_result_sets = (
+            result_sets[len(dense_calls) :]
+            if sparse_limit > 0
+            else [[] for _ in search.sparse_queries]
+        )
 
         candidates: dict[PointId, _Candidate[ChunkT]] = {}
         for result_set in dense_result_sets:
@@ -529,12 +533,65 @@ class HybridQdrantDB(Generic[ChunkT]):
 
         candidate_list = list(candidates.values())
         rerank_texts = [candidate.rerank_text for candidate in candidate_list]
-        reranked_sets = await asyncio.to_thread(
-            lambda: [
-                self.reranker.rerank(query.text, rerank_texts)
-                for query in search.sparse_queries
+        rerank_task = asyncio.create_task(
+            asyncio.to_thread(
+                lambda: [
+                    self.reranker.rerank(query.text, rerank_texts)
+                    for query in search.sparse_queries
+                ]
+            )
+        )
+
+        async def complete_sparse_scores(
+            query: PreparedSparseQuery,
+            initial_results: Sequence[models.ScoredPoint],
+        ) -> dict[PointId, float]:
+            raw_scores = {
+                point.id: float(point.score)
+                for point in initial_results
+            }
+            unknown_ids = [
+                candidate.point_id
+                for candidate in candidate_list
+                if candidate.point_id not in raw_scores
+            ]
+            if unknown_ids and query.vector.indices:
+                point_filter = models.Filter(
+                    must=[models.HasIdCondition(has_id=unknown_ids)]
+                )
+                restricted_filter = (
+                    point_filter
+                    if query_filter is None
+                    else models.Filter(must=[query_filter, point_filter])
+                )
+                response = await self.client.query_points(
+                    collection_name=self.config.collection_name,
+                    query=query.vector,
+                    using=self.config.sparse_vector_name,
+                    query_filter=restricted_filter,
+                    limit=len(unknown_ids),
+                    with_payload=False,
+                    with_vectors=False,
+                )
+                raw_scores.update(
+                    (point.id, float(point.score))
+                    for point in response.points
+                )
+            for point_id in unknown_ids:
+                raw_scores.setdefault(point_id, 0.0)
+            return raw_scores
+
+        raw_score_sets = await asyncio.gather(
+            *[
+                complete_sparse_scores(query, result_set)
+                for query, result_set in zip(
+                    search.sparse_queries,
+                    sparse_result_sets,
+                    strict=True,
+                )
             ]
         )
+        reranked_sets = await rerank_task
         fulltext_scores: list[float | None] = [None for _ in candidate_list]
         sparse_scores: list[float | None] = [None for _ in candidate_list]
         explanations: list[RerankExplanation | None] = [
@@ -546,17 +603,13 @@ class HybridQdrantDB(Generic[ChunkT]):
             + config.order_weight
             + config.proximity_weight
         )
-        for result_set, reranked in zip(sparse_result_sets, reranked_sets):
-            raw_scores = {
-                point.id: float(point.score)
-                for point in result_set
-            }
+        for raw_scores, reranked in zip(
+            raw_score_sets, reranked_sets, strict=True
+        ):
             maximum_sparse_score = max(raw_scores.values(), default=0.0)
             for item in reranked:
                 point_id = candidate_list[item.original_index].point_id
-                sparse_score = raw_scores.get(point_id)
-                if sparse_score is None:
-                    continue
+                sparse_score = raw_scores[point_id]
                 normalized_sparse_score = (
                     sparse_score / maximum_sparse_score
                     if maximum_sparse_score > 0.0

@@ -106,17 +106,21 @@ orderとproximityを`0.0`にする。
 
 ## 7. 生Sparse scoreとの合成
 
-`HybridQdrantDB`は各sparse queryの取得結果内で生Sparse scoreを最大値により正規化し、
-次の既定weightで位置scoreと合成する。
+`HybridQdrantDB`は各sparse queryについてdenseとsparseの統合候補をすべてQdrantで評価する。
+最初のsparse検索でscoreが得られなかった候補だけをpoint IDで限定して追加照会し、正常な
+追加照会でも返らなかった候補の生Sparse scoreを`0.0`とする。統合候補内の最大値により
+生Sparse scoreを正規化し、次の既定weightで位置scoreと合成する。
 
 ```text
 fulltext_score =
     0.6 × normalized_sparse + 0.2 × order + 0.2 × proximity
 ```
 
-`ScoredChunk.sparse_score`には、採用されたqueryについてQdrantが返した正規化前のscoreを保持する。
-dense検索だけで候補になり、sparse検索結果に含まれなかった候補の`fulltext_score`と
-`sparse_score`はともに`None`である。評価結果の`0.0`と未評価の`None`を区別する。
+各sparse queryで全候補のscoreを計算し、最大の`fulltext_score`を採用する。
+`ScoredChunk.sparse_score`には、採用されたqueryについてQdrantが計算した正規化前のscoreを
+保持する。Sparse queryがある場合は全候補を評価するため、非一致は`0.0`となる。
+Sparse queryがない場合だけ`fulltext_score`と`sparse_score`を`None`とし、評価結果の`0.0`と
+未評価の`None`を区別する。
 
 ## 8. 制限
 

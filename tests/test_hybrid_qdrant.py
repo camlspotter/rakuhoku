@@ -7,7 +7,7 @@ from typing import ClassVar
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from qdrant_client import AsyncQdrantClient
+from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import SparseVector
 
 from rakuhoku import (
@@ -77,6 +77,21 @@ class FakeSparseEncoder:
         if any("sparse-only" in text or "利用できない" == text for text in texts):
             return SparseVector(indices=[7], values=[1.0])
         return SparseVector(indices=[8], values=[1.0])
+
+
+class WeightedFakeSparseEncoder:
+    algorithm_id = "weighted-fake-sparse-v1"
+
+    def encode(self, value: str | Sequence[SparseField]) -> SparseVector:
+        if isinstance(value, str):
+            weight = 1.0
+        else:
+            weight = (
+                2.0
+                if any("sparse-strong" in field.text for field in value)
+                else 1.0
+            )
+        return SparseVector(indices=[9], values=[weight])
 
 
 def _components() -> tuple[FakeDenseEncoder, QueryVectorizer, HybridDBConfig]:
@@ -224,9 +239,9 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
             assert set(by_id) == {1, 2}
             assert by_id[1].dense_score == pytest.approx(1.0)
             assert by_id[2].dense_score is None
-            assert by_id[1].sparse_score is None
+            assert by_id[1].sparse_score == 0.0
             assert by_id[2].sparse_score is not None
-            assert by_id[1].fulltext_score is None
+            assert by_id[1].fulltext_score == 0.0
             assert by_id[2].fulltext_score is not None
             assert by_id[2].fulltext_score > 0
             assert by_id[2].chunk == TextChunk(
@@ -236,6 +251,126 @@ def test_one_db_search_unions_dense_and_sparse_and_reranks() -> None:
             assert all(result.collection_name == "chunks" for result in results)
             assert dense.query_calls == 1
             assert dense.document_calls == 1
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_dense_candidate_gets_its_exact_sparse_score() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        dense = FakeDenseEncoder()
+        sparse = WeightedFakeSparseEncoder()
+        vectorizer = QueryVectorizer(
+            dense_encoder=dense,
+            sparse_encoder=sparse,
+        )
+        config = HybridDBConfig(
+            collection_name="chunks",
+            dense_vector_name="dense",
+            sparse_vector_name="sparse",
+            dense_dimension=2,
+            dense_model_id=dense.model_name,
+            sparse_algorithm_id=sparse.algorithm_id,
+            vectorization_schema_id="text-v1",
+        )
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(
+                            title="dense-only", text="完全一致"
+                        ),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(
+                            title="sparse-strong", text="別の内容"
+                        ),
+                    ),
+                ]
+            )
+
+            results = await db.search(
+                dense_queries=["完全一致"],
+                sparse_queries=["完全一致"],
+                dense_limit=1,
+                sparse_limit=1,
+                with_fulltext_explanation=True,
+            )
+
+            by_id = {result.point_id: result for result in results}
+            assert set(by_id) == {1, 2}
+            assert by_id[1].dense_score == pytest.approx(1.0)
+            assert by_id[1].sparse_score is not None
+            assert by_id[1].sparse_score > 0.0
+            assert by_id[1].fulltext_score is not None
+            assert by_id[1].fulltext_score > 0.0
+            assert by_id[1].fulltext_explanation is not None
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_sparse_rescoring_preserves_the_search_filter() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(
+                            title="dense-only", text="設備があります"
+                        ),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(
+                            title="other", text="設備があります"
+                        ),
+                    ),
+                ]
+            )
+            prepared = vectorizer.prepare(
+                dense_queries=["設備"],
+                sparse_queries=["設備"],
+            )
+
+            results = await db.search_by_vectors(
+                prepared,
+                dense_limit=2,
+                sparse_limit=0,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="title",
+                            match=models.MatchValue(value="dense-only"),
+                        )
+                    ]
+                ),
+            )
+
+            assert [result.point_id for result in results] == [1]
+            assert results[0].sparse_score is not None
+            assert results[0].sparse_score > 0.0
+            assert results[0].fulltext_score is not None
         finally:
             await client.close()
 
@@ -375,6 +510,72 @@ def test_multiple_sparse_queries_retrieve_and_rerank_their_union() -> None:
                 for result in results
             )
             assert all(result.fulltext_explanation is not None for result in results)
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_multiple_sparse_queries_keep_each_candidates_best_score() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(
+                            title="dense-only", text="設備があります"
+                        ),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(
+                            title="sparse-only", text="利用できない設備です"
+                        ),
+                    ),
+                ]
+            )
+
+            async def search(
+                sparse_queries: list[str],
+            ) -> dict[object, ScoredChunk[TextChunk]]:
+                results = await db.search(
+                    dense_queries=["設備"],
+                    sparse_queries=sparse_queries,
+                    dense_limit=2,
+                    sparse_limit=1,
+                )
+                return {result.point_id: result for result in results}
+
+            first = await search(["設備"])
+            second = await search(["利用できない"])
+            combined = await search(["設備", "利用できない"])
+
+            for point_id, result in combined.items():
+                first_score = first[point_id].fulltext_score
+                second_score = second[point_id].fulltext_score
+                assert first_score is not None
+                assert second_score is not None
+                assert result.fulltext_score == pytest.approx(
+                    max(first_score, second_score)
+                )
+                expected = (
+                    first[point_id]
+                    if first_score >= second_score
+                    else second[point_id]
+                )
+                assert expected.sparse_score is not None
+                assert result.sparse_score == pytest.approx(
+                    expected.sparse_score
+                )
         finally:
             await client.close()
 
