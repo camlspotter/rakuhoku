@@ -431,8 +431,6 @@ class HybridQdrantDB(Generic[ChunkT]):
             raise ValueError(f"Qdrant point {point.id!r} has no payload")
         chunk = self.chunk_type.model_validate(point.payload)
         point_id = point.id
-        if not isinstance(point_id, (int, str, UUID)):
-            raise TypeError(f"Qdrant point has unsupported id {point_id!r}")
         return _Candidate(
             point_id=point_id,
             chunk=chunk,
