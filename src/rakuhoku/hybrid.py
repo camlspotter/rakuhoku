@@ -410,6 +410,37 @@ class HybridQdrantDB(Generic[ChunkT]):
             wait=wait,
         )
 
+    async def get_chunks_by_filter(
+        self,
+        *,
+        query_filter: models.Filter,
+        limit: int = 50,
+    ) -> list[ChunkPoint[ChunkT]]:
+        """Return validated chunks selected only by a Qdrant payload filter."""
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        if limit == 0:
+            return []
+
+        records, _ = await self.client.scroll(
+            collection_name=self.config.collection_name,
+            scroll_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        chunks: list[ChunkPoint[ChunkT]] = []
+        for record in records:
+            if record.payload is None:
+                raise ValueError(f"Qdrant point {record.id!r} has no payload")
+            chunks.append(
+                ChunkPoint(
+                    id=record.id,
+                    chunk=self.chunk_type.model_validate(record.payload),
+                )
+            )
+        return chunks
+
     def _validate_prepared_search(self, search: PreparedSearch) -> None:
         if search.dense_model_id != self.config.dense_model_id:
             raise ValueError("query dense model does not match collection")

@@ -116,6 +116,36 @@ await db.upsert_chunks(
 元のPydantic payloadはトップレベルへ保存する。検索候補を復元した後、
 `rerank_text()`を呼び出してrerank対象文字列を得る。
 
+## payload filterによるchunk取得
+
+Dense・Sparse検索を使わず、Qdrantのpayload filterだけでchunkを取得する場合は
+`get_chunks_by_filter()`を使用する。
+
+```python
+from qdrant_client import models
+
+chunks = await db.get_chunks_by_filter(
+    query_filter=models.Filter(
+        must=[
+            models.FieldCondition(
+                key="source_url",
+                match=models.MatchValue(value=source_url),
+            ),
+            models.FieldCondition(
+                key="attrs.article",
+                match=models.MatchValue(value="第3条"),
+            ),
+        ]
+    ),
+    limit=20,
+)
+```
+
+このメソッドはvectorizerとrerankerを呼ばず、vectorも取得しない。取得したpayloadを
+設定済みの`ChunkModel`型として検証し、point IDとchunkを持つ`list[ChunkPoint]`を返す。
+`query_filter`は必須である。`limit=0`は空のlistを返し、負数は`ValueError`にする。
+filter対象フィールドのpayload indexはアプリケーションがcollection構築時に作成する。
+
 ## query vectorの再利用
 
 ```python

@@ -377,6 +377,89 @@ def test_sparse_rescoring_preserves_the_search_filter() -> None:
     asyncio.run(run())
 
 
+def test_get_chunks_by_filter_returns_payloads_without_vector_search() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        dense, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            await db.upsert_chunks(
+                [
+                    ChunkPoint(
+                        id=1,
+                        chunk=TextChunk(title="規則A", text="第1条"),
+                    ),
+                    ChunkPoint(
+                        id=2,
+                        chunk=TextChunk(title="規則A", text="第2条"),
+                    ),
+                    ChunkPoint(
+                        id=3,
+                        chunk=TextChunk(title="規則B", text="第1条"),
+                    ),
+                ]
+            )
+            document_calls = dense.document_calls
+
+            chunks = await db.get_chunks_by_filter(
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="title",
+                            match=models.MatchValue(value="規則A"),
+                        )
+                    ]
+                ),
+                limit=1,
+            )
+
+            assert chunks == [
+                ChunkPoint(
+                    id=1,
+                    chunk=TextChunk(title="規則A", text="第1条"),
+                )
+            ]
+            assert dense.query_calls == 0
+            assert dense.document_calls == document_calls
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+def test_get_chunks_by_filter_handles_zero_and_rejects_negative_limit() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client,
+                config=config,
+                chunk_type=TextChunk,
+                vectorizer=vectorizer,
+            )
+            query_filter = models.Filter()
+
+            assert await db.get_chunks_by_filter(
+                query_filter=query_filter,
+                limit=0,
+            ) == []
+            with pytest.raises(ValueError, match="limit must be non-negative"):
+                await db.get_chunks_by_filter(
+                    query_filter=query_filter,
+                    limit=-1,
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_search_by_vectors_reuses_a_prepared_query() -> None:
     async def run() -> None:
         client = AsyncQdrantClient(":memory:")
