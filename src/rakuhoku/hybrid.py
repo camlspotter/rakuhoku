@@ -530,7 +530,7 @@ class HybridQdrantDB(Generic[ChunkT]):
         )
         result_sets = await asyncio.gather(*(dense_calls + sparse_calls))
         dense_result_sets = result_sets[: len(dense_calls)]
-        sparse_result_sets = (
+        sparse_result_sets: list[list[models.ScoredPoint]] = (
             result_sets[len(dense_calls) :]
             if sparse_limit > 0
             else [[] for _ in search.sparse_queries]
