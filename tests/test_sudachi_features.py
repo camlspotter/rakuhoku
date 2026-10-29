@@ -260,3 +260,25 @@ def test_explain_includes_morpheme_details_and_field_index() -> None:
     assert explanation.morphemes[0].normalized == "付属"
     assert explanation.morphemes[1].pos == "動詞"
     assert explanation.morphemes[1].synonym_ids == (7,)
+
+
+def test_query_max_groups_merge_shared_synonyms_but_keep_other_words_separate() -> None:
+    tokenizer = FakeTokenizer({
+        "query": [morph("A", "名詞", 1, 2), morph("B", "名詞", 2, 3),
+                  morph("C", "名詞", 4), morph("A", "名詞", 1, 2)],
+    })
+    encoder = SudachiSparseEncoder(tokenizer=tokenizer)  # type: ignore[arg-type]
+    original = encoder.encode("query")
+    expected = (
+        tuple(sorted(encoder.hash_feature(name) for name in
+                     ("token:A", "token:B", "synonym:1", "synonym:2", "synonym:3"))),
+        tuple(sorted(encoder.hash_feature(name) for name in ("token:C", "synonym:4"))),
+    )
+    assert encoder.query_max_groups("query") == tuple(sorted(expected))
+    assert encoder.encode("query") == original
+
+
+def test_query_without_synonyms_has_no_max_groups() -> None:
+    tokenizer = FakeTokenizer({"query": [morph("総長"), morph("の", "助詞", 99)]})
+    encoder = SudachiSparseEncoder(tokenizer=tokenizer)  # type: ignore[arg-type]
+    assert encoder.query_max_groups("query") == ()

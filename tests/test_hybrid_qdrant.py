@@ -69,6 +69,9 @@ class FakeDenseEncoder:
 class FakeSparseEncoder:
     algorithm_id = "fake-sparse-v1"
 
+    def query_max_groups(self, text: str) -> tuple[tuple[int, ...], ...]:
+        return ()
+
     def encode(self, value: str | Sequence[SparseField]) -> SparseVector:
         if isinstance(value, str):
             texts = [value]
@@ -81,6 +84,9 @@ class FakeSparseEncoder:
 
 class WeightedFakeSparseEncoder:
     algorithm_id = "weighted-fake-sparse-v1"
+
+    def query_max_groups(self, text: str) -> tuple[tuple[int, ...], ...]:
+        return ()
 
     def encode(self, value: str | Sequence[SparseField]) -> SparseVector:
         if isinstance(value, str):
@@ -711,3 +717,103 @@ def test_prepared_dense_query_rejects_a_matrix() -> None:
         PreparedDenseQuery(
             vector=np.asarray([[1.0, 0.0]], dtype=np.float32),
         )
+
+
+class SynonymFakeSparseEncoder(FakeSparseEncoder):
+    def encode(self, value: str | Sequence[SparseField]) -> SparseVector:
+        return SparseVector(indices=[7, 8, 9], values=[1.0, 1.0, 1.0])
+
+    def query_max_groups(self, text: str) -> tuple[tuple[int, ...], ...]:
+        return ((7, 8),)
+
+
+def test_sparse_max_retrieval_rescues_synonym_only_match_and_corrects_dense_candidate() -> None:
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        dense, _, config = _components()
+        vectorizer = QueryVectorizer(dense_encoder=dense, sparse_encoder=SynonymFakeSparseEncoder())
+        try:
+            db = await HybridQdrantDB.create(
+                client=client, config=config, chunk_type=TextChunk, vectorizer=vectorizer,
+            )
+            vectors = {
+                1: SparseVector(indices=[7, 8], values=[1.0, 1.0]),
+                2: SparseVector(indices=[8], values=[2.4]),
+                3: SparseVector(indices=[9], values=[0.7]),
+            }
+            await client.upsert(collection_name=config.collection_name, points=[
+                models.PointStruct(
+                    id=point_id,
+                    vector={"dense": [1.0, 0.0] if point_id == 1 else [0.0, 1.0],
+                            "sparse": vector},
+                    payload=TextChunk(title="test", text="query").model_dump(mode="json"),
+                ) for point_id, vector in vectors.items()
+            ])
+            prepared = vectorizer.prepare(dense_queries=[], sparse_queries=["query"])
+            results = await db.search_by_vectors(prepared, dense_limit=0, sparse_limit=1)
+            assert [result.point_id for result in results] == [2]
+            single = await client.query_points(
+                collection_name=config.collection_name,
+                query=SparseVector(indices=[8], values=[1.0]), using="sparse", limit=3,
+            )
+            synonym_scores = {point.id: point.score for point in single.points}
+            assert results[0].sparse_score == pytest.approx(synonym_scores[2])
+
+            # A dense-only candidate must use the same corrected sparse score.
+            prepared = vectorizer.prepare(dense_queries=["query"], sparse_queries=["query"])
+            results = await db.search_by_vectors(prepared, dense_limit=1, sparse_limit=1)
+            by_id = {result.point_id: result for result in results}
+            assert set(by_id) == {1, 2}
+            exact = await client.query_points(
+                collection_name=config.collection_name,
+                query=SparseVector(indices=[7], values=[1.0]), using="sparse", limit=3,
+            )
+            exact_scores = {point.id: point.score for point in exact.points}
+            assert by_id[1].sparse_score == pytest.approx(max(exact_scores[1], synonym_scores[1]))
+            assert by_id[2].sparse_score == pytest.approx(synonym_scores[2])
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("groups, retained", [
+    (((7, 8, 9),), (9, 10)),
+    (((7, 8), (9, 10)), (8, 10)),
+])
+def test_sparse_max_counts_alternatives_once_and_adds_independent_evidence(
+    groups: tuple[tuple[int, ...], ...], retained: tuple[int, ...],
+) -> None:
+    from rakuhoku import PreparedSparseQuery
+
+    async def run() -> None:
+        client = AsyncQdrantClient(":memory:")
+        _, vectorizer, config = _components()
+        try:
+            db = await HybridQdrantDB.create(
+                client=client, config=config, chunk_type=TextChunk, vectorizer=vectorizer,
+            )
+            await client.upsert(collection_name=config.collection_name, points=[
+                models.PointStruct(
+                    id=1,
+                    vector={"dense": [0.0, 1.0], "sparse": SparseVector(
+                        indices=[7, 8, 9, 10], values=[1.0, 2.0, 3.0, 4.0],
+                    )},
+                    payload=TextChunk(title="test", text="query").model_dump(mode="json"),
+                ),
+            ])
+            prepared = vectorizer.prepare(dense_queries=[], sparse_queries=[])
+            prepared.sparse_queries.append(PreparedSparseQuery(
+                text="query", vector=SparseVector(indices=[7, 8, 9, 10], values=[1.0] * 4),
+                max_groups=groups,
+            ))
+            results = await db.search_by_vectors(prepared, dense_limit=0, sparse_limit=1)
+            expected = await client.query_points(
+                collection_name=config.collection_name, using="sparse", limit=1,
+                query=SparseVector(indices=list(retained), values=[1.0] * len(retained)),
+            )
+            assert results[0].sparse_score == pytest.approx(expected.points[0].score)
+        finally:
+            await client.close()
+
+    asyncio.run(run())

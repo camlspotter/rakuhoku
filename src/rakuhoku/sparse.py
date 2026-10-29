@@ -238,6 +238,30 @@ class SudachiSparseEncoder:
     def encode_documents(self, texts: list[str]) -> list[models.SparseVector]:
         return [self.encode(text) for text in texts]
 
+    def query_max_groups(self, text: str) -> tuple[tuple[int, ...], ...]:
+        """Treat a query word and its synonym IDs as alternative evidence.
+
+        Merge overlapping groups so a shared synonym feature is counted once.
+        Stored vectors and their TF saturation remain unchanged.
+        """
+        groups: list[set[int]] = []
+        for morpheme in self.tokenizer.tokenize(text):
+            if morpheme.pos in self.excluded_pos or not morpheme.synonym_ids:
+                continue
+            group = {self.hash_feature(f"token:{morpheme.normalized}")}
+            group.update(
+                self.hash_feature(f"synonym:{synonym_id}")
+                for synonym_id in morpheme.synonym_ids
+            )
+            separate: list[set[int]] = []
+            for previous in groups:
+                if group.intersection(previous):
+                    group.update(previous)
+                else:
+                    separate.append(previous)
+            groups = [*separate, group]
+        return tuple(sorted(tuple(sorted(group)) for group in groups if len(group) > 1))
+
     def encode_queries(self, texts: list[str]) -> list[models.SparseVector]:
         return [self.encode(text) for text in texts]
 

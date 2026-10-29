@@ -122,7 +122,10 @@ fused = rrf_fuse(
 )
 ```
 
-`sparse_score`はQdrantが返した生Sparse scoreである。`fulltext_explanation`は通常
+`sparse_score`はQdrantのIDF付き寄与から、単語と同義語の重複加点を除いたSparse scoreである。
+同じquery語のtokenと各synonym IDは加算せず、最大の寄与だけを採用する。
+同義語IDを共有するquery語のグループは統合して重複を防ぐ。別グループや名詞句・文字gramは加算する。
+`fulltext_explanation`は通常
 `None`であり、順序と距離の内訳が必要な
 場合だけ、`with_fulltext_explanation=True`を指定する。
 `rrf_fuse()`は`dense_score`と`fulltext_score`からそれぞれ順位を作り、候補、RRF score、
@@ -136,11 +139,18 @@ results = await db.search(
 )
 ```
 
-sparse検索のQdrant scoreを基本関連度として保持し、query内の順序と距離をローカルrerankerで
+sparse検索の重複補正済みscoreを基本関連度として保持し、query内の順序と距離をローカルrerankerで
 加える。複数DBでquery vectorを再利用する場合は、
 `QueryVectorizer.prepare()`で一度だけ`PreparedSearch`を作り、各DBの
 `search_by_vectors()`へ渡す。作成・登録を含む完全なAPIは
 [Qdrant統合API](docs/qdrant.md)を参照する。
+
+重複補正は候補選択とdense候補のSparse score補完の両方に適用する。
+未取得候補の加算scoreが補正後top-kに入り得る間は候補取得を拡大する。
+そのため同義語のあるqueryではQdrantへの追加照会が発生する。
+保存済みvectorとalgorithm IDは変わらず、索引の再構築は不要。
+独自Sparse encoderは `query_max_groups(text)` で排他的な特徴index群を返す。
+そのような特徴がないencoderは空tupleを返す。
 
 ## ローカルreranking
 

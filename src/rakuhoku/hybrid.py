@@ -46,6 +46,8 @@ class SparseEncoder(Protocol):
         self, value: str | Sequence[SparseField]
     ) -> models.SparseVector: ...
 
+    def query_max_groups(self, text: str) -> tuple[tuple[int, ...], ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedDenseQuery:
@@ -62,6 +64,17 @@ class PreparedDenseQuery:
 class PreparedSparseQuery:
     text: str
     vector: models.SparseVector
+    max_groups: tuple[tuple[int, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        seen: set[int] = set()
+        available = set(self.vector.indices)
+        for group in self.max_groups:
+            if len(group) < 2 or len(set(group)) != len(group):
+                raise ValueError("sparse max groups need at least two distinct indices")
+            if seen.intersection(group) or not set(group).issubset(available):
+                raise ValueError("sparse max groups must be disjoint query indices")
+            seen.update(group)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +131,7 @@ class QueryVectorizer:
                 PreparedSparseQuery(
                     text=text,
                     vector=self.sparse_encoder.encode(text),
+                    max_groups=self.sparse_encoder.query_max_groups(text),
                 )
                 for text in sparse_queries
             ],
@@ -469,6 +483,45 @@ class HybridQdrantDB(Generic[ChunkT]):
             dense_score=dense_score,
         )
 
+    async def _sparse_max_scores(
+        self,
+        query: PreparedSparseQuery,
+        points: Sequence[models.ScoredPoint],
+    ) -> dict[PointId, float]:
+        """Replace each token/synonym sum by its largest IDF-weighted contribution."""
+        scores = {point.id: float(point.score) for point in points}
+        if not points or not query.max_groups:
+            return scores
+        weights = dict(zip(query.vector.indices, query.vector.values, strict=True))
+        point_filter = models.Filter(
+            must=[models.HasIdCondition(has_id=[point.id for point in points])]
+        )
+        semaphore = asyncio.Semaphore(6)
+
+        async def contribution(index: int) -> tuple[int, dict[PointId, float]]:
+            async with semaphore:
+                response = await self.client.query_points(
+                    collection_name=self.config.collection_name,
+                    query=models.SparseVector(indices=[index], values=[weights[index]]),
+                    using=self.config.sparse_vector_name,
+                    query_filter=point_filter,
+                    limit=len(points),
+                    with_payload=False,
+                    with_vectors=False,
+                )
+            return index, {point.id: float(point.score) for point in response.points}
+
+        components = dict(await asyncio.gather(*(
+            contribution(index) for group in query.max_groups for index in group
+        )))
+        for point_id, score in scores.items():
+            for group in query.max_groups:
+                values = [components[index].get(point_id, 0.0) for index in group]
+                score -= math.fsum(values) - max(values)
+            # Qdrant's float32 sums can differ slightly from the component sums.
+            scores[point_id] = max(0.0, score)
+        return scores
+
     async def search_by_vectors(
         self,
         search: PreparedSearch,
@@ -507,16 +560,29 @@ class HybridQdrantDB(Generic[ChunkT]):
         ) -> list[models.ScoredPoint]:
             if not query.vector.indices:
                 return []
-            response = await self.client.query_points(
-                collection_name=self.config.collection_name,
-                query=query.vector,
-                using=self.config.sparse_vector_name,
-                query_filter=query_filter,
-                limit=sparse_limit,
-                with_payload=True,
-                with_vectors=False,
-            )
-            return list(response.points)
+            limit = sparse_limit
+            while True:
+                response = await self.client.query_points(
+                    collection_name=self.config.collection_name,
+                    query=query.vector,
+                    using=self.config.sparse_vector_name,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                scores = await self._sparse_max_scores(query, response.points)
+                corrected = sorted(
+                    (point.model_copy(update={"score": scores[point.id]})
+                     for point in response.points),
+                    key=lambda point: (-point.score, str(point.id)),
+                )
+                # Additive scores bound corrected scores from above. Expand until
+                # unseen points cannot displace the corrected top-k, including ties.
+                if (not query.max_groups or len(corrected) < limit
+                        or response.points[-1].score < corrected[sparse_limit - 1].score):
+                    return corrected[:sparse_limit]
+                limit *= 2
 
         dense_calls = (
             [dense_search(query) for query in search.dense_queries]
@@ -604,10 +670,7 @@ class HybridQdrantDB(Generic[ChunkT]):
                     with_payload=False,
                     with_vectors=False,
                 )
-                raw_scores.update(
-                    (point.id, float(point.score))
-                    for point in response.points
-                )
+                raw_scores.update(await self._sparse_max_scores(query, response.points))
             for point_id in unknown_ids:
                 raw_scores.setdefault(point_id, 0.0)
             return raw_scores
