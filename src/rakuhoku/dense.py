@@ -47,6 +47,7 @@ def _load_sentence_transformer(
 ) -> SentenceModel:
     from sentence_transformers import SentenceTransformer
 
+    logger.info("Loading embedding model %s on %s", model_name, device)
     return cast(
         SentenceModel,
         SentenceTransformer(
@@ -85,7 +86,6 @@ class SentenceTransformerEncoder:
     @property
     def model(self) -> SentenceModel:
         if self._model is None:
-            logger.info("Loading embedding model %s on %s", self.model_name, self.device)
             try:
                 self._model = self._model_loader(self.model_name, self.device, True)
             except Exception:
